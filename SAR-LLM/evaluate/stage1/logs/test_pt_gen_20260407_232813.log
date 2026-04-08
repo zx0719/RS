@@ -1,0 +1,10 @@
+[INFO] log       → /home/zhuxiang/RS/SAR-LLM/evaluate/stage1/logs/test_pt_gen_20260407_232813.log
+[INFO] projector → /mnt/data/qianwentao/checkpoints_sarqwen/sar_projector_stage1_sarcap.pt
+[INFO] datasets  → (config defaults)
+[INFO] max_gen_samples = -1  max_new_tokens = 200
+[INFO] datasets to evaluate: ['sarlang', 'sartext']
+
+============================================================
+  数据集: sarlang   test size = 6190
+============================================================
+  (max_gen_samples=None, max_new_tokens=200)

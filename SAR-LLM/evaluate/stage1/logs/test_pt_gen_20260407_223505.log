@@ -1,0 +1,36 @@
+[INFO] log       → /home/zhuxiang/RS/SAR-LLM/evaluate/stage1/logs/test_pt_gen_20260407_223505.log
+[INFO] projector → /mnt/data/qianwentao/checkpoints_sarqwen/sar_projector_stage1_sarcap.pt
+[INFO] datasets  → (config defaults)
+[INFO] max_gen_samples = 500  max_new_tokens = 200
+[INFO] datasets to evaluate: ['sarlang', 'sartext']
+
+============================================================
+  数据集: sarlang   test size = 6190
+============================================================
+  (max_gen_samples=500, max_new_tokens=200)
+  BLEU-4     = 0.0005
+  ROUGE-L    = 0.0190
+  评测样本数 = 500  (2271s)
+
+  首条真实 prompt:
+<sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar> <sar>
+User: Write a terse but informative summary of the picture.
+Assistant: 
+
+  样本示例（前 3 条）:
+  [1] Ref: The image shows an urban area with large buildings and intersecting roads.
+       Hyp: 该图片为一张模糊的、包含大量无意义字符和乱码的图像，无法辨识具体内容或主题。可能为数据损坏、编码错误或故意干扰的图像。无有效视觉信息可供总结。
+
+  [2] Ref: Aerial view of an urban area with buildings, roads, and spaces.
+       Hyp: 该图像是一张经过严重扭曲和变形的文本图像，内容看似是“中华人民共和国”等中文字符，但因字体被破坏、重叠和错位，导致无法正常阅读。图像整体呈现一种混乱、抽象的视觉效果，可能意在表达信息失真、语言混乱或政治符号的解构。这种视觉风格常用于艺术表达或隐喻性批判，暗示对权威话语的质疑或对信息真实性的挑战。图像无明确语境，需结合上下文理解其意图。
+
+  [3] Ref: The image shows an urban area with dense buildings and busy streets.
+       Hyp: 0
+
+The image appears to be a jumbled, corrupted, or nonsensical string of characters with no coherent visual content. There are no discernible objects, people, scenes, or meaningful text. It may be a glitch, error, or placeholder image. No brief account can be provided as there is no valid visual information to describe.
+
+
+============================================================
+  数据集: sartext   test size = 13621
+============================================================
+  (max_gen_samples=500, max_new_tokens=200)
