@@ -465,14 +465,22 @@ def convert_ssdd_to_yolo_obb(
     ssdd_root = Path(ssdd_root)
     output_root = Path(output_root)
 
-    ann_dir = ssdd_root / "Annotations"
-
-    # Determine image source directory: train and val share JPEGImages_train,
-    # test uses JPEGImages_test.
+    # Determine annotation and image source directories per split.
+    # Prefer the split-specific Annotations_train / Annotations_test dirs when
+    # they exist; fall back to the combined Annotations/ directory.
     if split == "test":
+        ann_dir = ssdd_root / "Annotations_test"
+        if not ann_dir.exists():
+            ann_dir = ssdd_root / "Annotations"
         img_src_dir = ssdd_root / "JPEGImages_test"
     else:
+        ann_dir = ssdd_root / "Annotations_train"
+        if not ann_dir.exists():
+            ann_dir = ssdd_root / "Annotations"
         img_src_dir = ssdd_root / "JPEGImages_train"
+
+    # Also accept the flat JPEGImages/ directory as a fallback for images
+    img_src_dir_fallback = ssdd_root / "JPEGImages"
 
     label_out_dir = output_root / "labels" / split
     image_out_dir = output_root / "images" / split
@@ -511,13 +519,19 @@ def convert_ssdd_to_yolo_obb(
 
         n_objects += len(objs)
 
-        # Copy image (try common extensions)
+        # Copy image (try primary dir, then fallback to flat JPEGImages/)
         copied = False
-        for ext in (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"):
-            src_img = img_src_dir / f"{stem}{ext}"
-            if src_img.exists():
-                shutil.copy2(src_img, image_out_dir / src_img.name)
-                copied = True
+        search_dirs = [img_src_dir]
+        if img_src_dir_fallback.exists() and img_src_dir_fallback != img_src_dir:
+            search_dirs.append(img_src_dir_fallback)
+        for search_dir in search_dirs:
+            for ext in (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"):
+                src_img = search_dir / f"{stem}{ext}"
+                if src_img.exists():
+                    shutil.copy2(src_img, image_out_dir / src_img.name)
+                    copied = True
+                    break
+            if copied:
                 break
         if not copied:
             print(f"WARNING: No image found for {stem} in {img_src_dir}", file=sys.stderr)
@@ -555,7 +569,22 @@ def split_ssdd_train_val(
     import random
 
     ssdd_root = Path(ssdd_root)
-    ann_dir = ssdd_root / "Annotations"
+    # Prefer Annotations_train/ (928 training images) over the combined
+    # Annotations/ directory (1160 total) so test images are not leaked into
+    # the train/val split.
+    ann_train_dir = ssdd_root / "Annotations_train"
+    if ann_train_dir.exists():
+        ann_dir = ann_train_dir
+    else:
+        # Fall back to ImageSets/Main/train.txt if available
+        train_list = ssdd_root / "ImageSets" / "Main" / "train.txt"
+        if train_list.exists():
+            all_stems = sorted(train_list.read_text().splitlines())
+            rng = random.Random(seed)
+            rng.shuffle(all_stems)
+            n_val = max(1, int(len(all_stems) * val_ratio))
+            return all_stems[n_val:], all_stems[:n_val]
+        ann_dir = ssdd_root / "Annotations"
 
     all_stems = sorted(p.stem for p in ann_dir.glob("*.xml"))
 

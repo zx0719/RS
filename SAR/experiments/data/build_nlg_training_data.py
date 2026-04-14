@@ -45,7 +45,7 @@ _ROOT = _HERE.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from modules.report.prompt_templates import build_system_prompt, build_user_prompt
+from modules.report.prompt_templates import build_system_prompt, build_system_prompt_variants, build_user_prompt
 from modules.report.generator import ReportGenerator
 
 logger = logging.getLogger(__name__)
@@ -579,10 +579,11 @@ def process_dataset(
     class_dist : dict[str, int]
         Counts per class code observed across all processed items.
     """
-    system_prompt = build_system_prompt()
     training_items: list[dict[str, Any]] = []
     class_dist: dict[str, int] = {}
     skipped = 0
+    # Deterministic variant selector tied to sample index for reproducibility
+    _variant_rng = random.Random(42)
 
     for item in items:
         if max_samples is not None and len(training_items) >= max_samples:
@@ -612,6 +613,9 @@ def process_dataset(
             skipped += 1
             continue
 
+        # Vary the system prompt across samples for training diversity
+        variant_index = _variant_rng.randint(0, 3)
+        system_prompt = build_system_prompt_variants(variant_index)
         user_prompt = build_user_prompt(evidence)
         training_item: dict[str, Any] = {
             "messages": [
@@ -765,11 +769,12 @@ def main() -> None:
     save_jsonl(train_items, train_path)
     save_jsonl(val_items, val_path)
 
-    # Compute avg report length
+    # Compute avg report length — len() on str counts Unicode characters, not bytes.
+    # This correctly reflects Chinese character count of the assistant content.
     report_lengths = [
         len(item["messages"][2]["content"])
         for item in all_items
-        if len(item["messages"]) >= 3
+        if len(item["messages"]) >= 3 and item["messages"][2]["role"] == "assistant"
     ]
     avg_len = round(sum(report_lengths) / len(report_lengths), 1) if report_lengths else 0.0
 

@@ -118,13 +118,22 @@ def main() -> None:
     )
 
     # 4. Convert test split
-    # SSDD test images live in JPEGImages_test/; annotations share Annotations/.
-    # We use all XMLs whose corresponding test images exist.
+    # SSDD test annotations live in Annotations_test/ (preferred) or can be
+    # identified via ImageSets/Main/test.txt.  Images are in JPEGImages_test/.
     print("[4/4] Converting test split ...")
-    ann_dir = ssdd_root / "Annotations"
+    ann_test_dir = ssdd_root / "Annotations_test"
     test_img_dir = ssdd_root / "JPEGImages_test"
-    if test_img_dir.exists():
-        # Collect stems that have a matching test image
+    if ann_test_dir.exists():
+        test_stems = sorted(p.stem for p in ann_test_dir.glob("*.xml"))
+        test_stats = convert_ssdd_to_yolo_obb(
+            ssdd_root=ssdd_root,
+            output_root=output_dir,
+            split="test",
+            file_stems=test_stems,
+        )
+    elif test_img_dir.exists():
+        # Fall back: collect stems that have a matching test image
+        ann_dir = ssdd_root / "Annotations"
         test_stems = []
         for xml_path in sorted(ann_dir.glob("*.xml")):
             stem = xml_path.stem
@@ -139,7 +148,7 @@ def main() -> None:
             file_stems=test_stems,
         )
     else:
-        print(f"      WARNING: {test_img_dir} not found — skipping test split")
+        print(f"      WARNING: {ann_test_dir} not found — skipping test split")
         test_stats = {"n_images": 0, "n_objects": 0, "output_dir": str(output_dir)}
 
     # 5. Generate YAML

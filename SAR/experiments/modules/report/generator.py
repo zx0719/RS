@@ -305,7 +305,17 @@ class ReportGenerator:
     # ------------------------------------------------------------------
 
     def _template_fallback(self, evidence: dict) -> str:
-        """当 LLM 不可用或后验证失败时，使用规则模板生成正文。"""
+        """当 LLM 不可用或后验证失败时，使用规则模板生成正文。
+
+        生成 100～300 字的军事情报通报正文，包含：
+        - 首句：卫星/传感器、成像日期、侦察区域、总体目标数量汇总（随机句式）
+        - 中段：按目标类别逐一列出数量（随机措辞）
+        - 末句：目标空间分布概述（随机收尾）
+
+        使用 package_id 派生的随机种子保证可复现性。
+        """
+        import random as _random
+
         inp = evidence.get("input", {})
         metadata = inp.get("metadata", {})
         mission = inp.get("mission", {})
@@ -316,11 +326,16 @@ class ReportGenerator:
         spatial_summary = statistics.get("spatial_summary", {})
         confidence_summary = statistics.get("confidence_summary", {})
 
+        # 使用 package_id 确定随机种子，保证相同输入产生相同输出
+        pkg_id = evidence.get("package_id", "")
+        rng = _random.Random(hash(pkg_id))
+
         satellite = metadata.get("satellite", "侦察卫星")
         acq_time_raw = metadata.get("acquisition_time", "")
         date_cn = _fmt_acquisition_time(acq_time_raw) if acq_time_raw else "某日"
         region_name = mission.get("region_name", "目标区域")
         scene_type_cn = scene.get("scene_type_cn", "")
+        region_type = mission.get("region_type", "unknown")
 
         all_objects = totals.get("all_objects", 0)
         ships = totals.get("ships", 0)
@@ -329,7 +344,7 @@ class ReportGenerator:
         needs_caution = confidence_summary.get("review_required_count", 0) > 0
         caution_prefix = "疑似" if needs_caution else ""
 
-        # 首句：总体汇总
+        # ── 总体摘要字符串 ──────────────────────────────────────────────────
         summary_parts: list[str] = []
         if ships > 0:
             summary_parts.append(f"舰船{ships}艘")
@@ -338,23 +353,97 @@ class ReportGenerator:
         summary_str = "、".join(summary_parts) if summary_parts else f"军事目标{all_objects}个"
 
         scene_clause = f"{scene_type_cn}" if scene_type_cn else ""
-        first_sentence = (
-            f"据{satellite}卫星{date_cn}侦察，{region_name}"
-            + (f"（{scene_clause}）" if scene_clause else "")
-            + f"共{caution_prefix}发现{summary_str}。"
-        )
+        region_with_scene = region_name + (f"（{scene_clause}）" if scene_clause else "")
 
-        # 中段：按类别列举
-        class_text = _build_class_list_text(by_class)
-        middle_sentence = ""
-        if class_text and class_text != "无":
-            middle_sentence = f"主要包括{class_text}。"
+        # ── 首句：随机句式（均以"据"开头） ──────────────────────────────────
+        opener_templates = [
+            f"据{satellite}卫星{date_cn}对{region_with_scene}实施侦察，共{caution_prefix}发现{summary_str}，目标情况如下。",
+            f"据{satellite}卫星{date_cn}对{region_with_scene}实施侦察，{caution_prefix}发现{summary_str}，具体情况如下。",
+            f"据{satellite}卫星{date_cn}对{region_with_scene}实施侦察，共{caution_prefix}探测到{summary_str}。",
+        ]
+        first_sentence = rng.choice(opener_templates)
 
-        # 末句：空间分布
+        # ── 中段：按类别逐一列举（随机措辞） ─────────────────────────────────
+        class_sentences: list[str] = []
+        ship_items = [c for c in by_class if c.get("code", "") in _SHIP_UNITS]
+        aircraft_items = [c for c in by_class if c.get("code", "") not in _SHIP_UNITS]
+
+        if ship_items:
+            ship_parts = []
+            for cls_item in ship_items:
+                name_cn = cls_item.get("name_cn", "舰船")
+                count = cls_item.get("count", 0)
+                if count > 0:
+                    # 随机选择中段措辞
+                    mid_phrase = rng.choice([
+                        f"其中{name_cn}{count}艘",
+                        f"发现{name_cn}{count}艘",
+                        f"识别{name_cn}{count}艘",
+                    ])
+                    ship_parts.append(mid_phrase)
+            if ship_parts:
+                caution_word = "疑似" if needs_caution else "确认"
+                location_clause = (
+                    "目标停泊于港口区域" if region_type == "harbor" else
+                    "目标位于锚地水域" if region_type == "anchorage" else
+                    "目标分布于监测区域"
+                )
+                class_sentences.append(
+                    f"舰船目标共{ships}艘，{caution_word}识别为{'、'.join(ship_parts).replace('其中', '').replace('发现', '').replace('识别', '')}，"
+                    + f"{location_clause}。"
+                )
+                # 修正：直接构建清晰的列举
+                ship_detail_parts = []
+                for cls_item in ship_items:
+                    name_cn = cls_item.get("name_cn", "舰船")
+                    count = cls_item.get("count", 0)
+                    if count > 0:
+                        ship_detail_parts.append(f"{name_cn}{count}艘")
+                ship_detail = "、".join(ship_detail_parts)
+                mid_verb = rng.choice(["其中", "发现", "识别"])
+                class_sentences[-1] = (
+                    f"舰船目标共{ships}艘，{mid_verb}{ship_detail}，"
+                    + f"{location_clause}。"
+                )
+
+        if aircraft_items:
+            ac_parts = []
+            for cls_item in aircraft_items:
+                name_cn = cls_item.get("name_cn", "飞机")
+                count = cls_item.get("count", 0)
+                if count > 0:
+                    ac_parts.append(f"{name_cn}{count}架")
+            if ac_parts:
+                ac_detail = "、".join(ac_parts)
+                location_clause = (
+                    "停放于机场停机坪" if region_type in ("airport", "airbase") else
+                    "目标分布于监测区域"
+                )
+                mid_verb = rng.choice(["其中", "发现", "识别"])
+                class_sentences.append(
+                    f"飞机目标共{aircraft}架，{mid_verb}{ac_detail}，"
+                    + f"{location_clause}。"
+                )
+
+        middle_text = "".join(class_sentences)
+
+        # ── 末句：随机收尾（无套话） ────────────────────────────────────────
         distribution = spatial_summary.get("distribution", "")
-        last_sentence = f"目标{distribution}。" if distribution else ""
+        if distribution:
+            closing_templates = [
+                f"目标{distribution}。",
+                f"上述目标{distribution}，态势研判中。",
+                f"各目标{distribution}，建议持续关注。",
+            ]
+        else:
+            closing_templates = [
+                "建议持续跟踪目标动态。",
+                "上述目标分布情况待进一步核实。",
+                "各目标态势研判中，建议持续关注。",
+            ]
+        last_sentence = rng.choice(closing_templates)
 
-        body = first_sentence + middle_sentence + last_sentence
+        body = first_sentence + middle_text + last_sentence
         return body.strip()
 
 

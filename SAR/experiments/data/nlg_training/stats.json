@@ -1,0 +1,19 @@
+{
+  "total_samples": 3000,
+  "train": 2700,
+  "val": 300,
+  "avg_report_length": 90.1,
+  "class_distribution": {
+    "other_vessel": 5204,
+    "replenishment": 597,
+    "fighter": 2508,
+    "destroyer": 755,
+    "carrier": 157,
+    "helicopter": 34
+  },
+  "generated_at": "2026-04-14T08:07:10.872092+00:00",
+  "sources": {
+    "fsar_cap": "/mnt/data/mm_data/SAR/FSAR-Cap/FSAR-Captrain.json",
+    "sarlang": "/mnt/data/mm_data/SAR/SARLANG-1M/Text/Caption/train/Caption_train.json"
+  }
+}
