@@ -216,13 +216,24 @@ class ImagePreprocessor:
                 # GSD: derive from affine transform pixel size (average x/y)
                 transform = ds.transform
                 if transform is not None:
-                    pixel_x_m = abs(transform.a)
-                    pixel_y_m = abs(transform.e)
-                    meta["resolution_m"] = round((pixel_x_m + pixel_y_m) / 2, 4)
+                    pixel_x = abs(transform.a)
+                    pixel_y = abs(transform.e)
+                    # If CRS is geographic (degrees), convert to approximate metres
+                    if ds.crs is not None and ds.crs.is_geographic:
+                        pixel_x_m = pixel_x * 111320
+                        pixel_y_m = pixel_y * 111320
+                    else:
+                        pixel_x_m = pixel_x
+                        pixel_y_m = pixel_y
+                    meta["resolution_m"] = round((pixel_x_m + pixel_y_m) / 2, 1)
 
                 # GDAL tags (if embedded, e.g. GF-3 standard products)
                 tags = ds.tags()
                 meta.update(_extract_tags(tags))
+
+                # If no satellite/sensor from tags, try to parse from filename
+                if not meta.get("satellite") or meta.get("satellite") == _FALLBACK_SATELLITE:
+                    meta.update(_parse_filename_metadata(path))
 
         except Exception as exc:
             logger.error("rasterio failed to open %s: %s", path, exc)
@@ -318,12 +329,22 @@ class ImagePreprocessor:
 
             gt = ds.GetGeoTransform()
             if gt and gt != (0.0, 1.0, 0.0, 0.0, 0.0, 1.0):
-                pixel_x_m = abs(gt[1])
-                pixel_y_m = abs(gt[5])
-                meta["resolution_m"] = round((pixel_x_m + pixel_y_m) / 2, 4)
+                pixel_x = abs(gt[1])
+                pixel_y = abs(gt[5])
+                # Check if projection is geographic (degrees)
+                is_geo = srs.IsGeographic() if wkt else False
+                if is_geo:
+                    pixel_x_m = pixel_x * 111320
+                    pixel_y_m = pixel_y * 111320
+                else:
+                    pixel_x_m = pixel_x
+                    pixel_y_m = pixel_y
+                meta["resolution_m"] = round((pixel_x_m + pixel_y_m) / 2, 1)
 
             tags = {k: v for k, v in ds.GetMetadata().items()}
             meta.update(_extract_tags(tags))
+            if not meta.get("satellite") or meta.get("satellite") == _FALLBACK_SATELLITE:
+                meta.update(_parse_filename_metadata(path))
 
             ds = None  # close
 
@@ -353,6 +374,48 @@ def _dtype_to_bits(dtype_str: str) -> Optional[int]:
         "CFloat32": 32, "CFloat64": 64,
     }
     return mapping.get(dtype_str)
+
+
+def _parse_filename_metadata(path: str) -> dict[str, Any]:
+    """Parse satellite/sensor/date from common Chinese satellite product filenames.
+
+    Supported patterns:
+    - GF series: ``F-GF6_PMS_E120.2_N22.4_20250514_...``
+      → satellite="GF-6", sensor="PMS", acquisition_time=2025-05-14
+    - GF-3 SAR:  ``GF3_SAR_..._20240101_...``
+    """
+    import re as _re
+    from datetime import timezone as _tz
+
+    result: dict[str, Any] = {}
+    stem = Path(path).stem  # strip extension
+
+    # Pattern: F-GFn_SENSOR_..._YYYYMMDD_...
+    m = _re.search(
+        r"F-GF(\w+)_([A-Z0-9]+)_[EN][\d.]+_[NS][\d.]+_(\d{8})", stem, _re.IGNORECASE
+    )
+    if m:
+        sat_suffix = m.group(1)   # e.g. "6" or "3"
+        sensor = m.group(2)        # e.g. "PMS" or "IW"
+        date_str = m.group(3)      # e.g. "20250514"
+        result["satellite"] = f"GF-{sat_suffix}"
+        result["sensor"] = sensor
+        result["acquisition_time"] = (
+            f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}T00:00:00+00:00"
+        )
+        return result
+
+    # Pattern: GF3_..._YYYYMMDD_...
+    m = _re.search(r"GF(\d+)_(\w+)_.*?_(\d{8})", stem, _re.IGNORECASE)
+    if m:
+        result["satellite"] = f"GF-{m.group(1)}"
+        result["sensor"] = m.group(2)
+        date_str = m.group(3)
+        result["acquisition_time"] = (
+            f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}T00:00:00+00:00"
+        )
+
+    return result
 
 
 def _extract_tags(tags: dict[str, str]) -> dict[str, Any]:
