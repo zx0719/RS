@@ -1,7 +1,8 @@
 # SAR图像军事目标情报通报系统 — 项目进度
 
 > 最后更新：2026-04-14  
-> 测试状态：**76 passed, 1 skipped**（Qwen3-4B路径挂载后自动解除skip）
+> 测试状态：**76 passed, 1 skipped**（Qwen3-4B路径挂载后自动解除skip）  
+> SSDD转换：**789 train / 139 val / 232 test**（共2587条标注），dataset.yaml就绪
 
 ---
 
@@ -41,7 +42,8 @@
 | 训练脚本CLI (`train.py`) | ✅ | |
 | DOTA→YOLO-OBB格式转换 | ✅ | `dataset_utils.py` |
 | Mock检测器（无ultralytics可用） | ❌ | 待实现 |
-| 实际训练权重 (`best.pt`) | 🔄 | SSDD数据集已就绪，转换脚本已写 |
+| SSDD→YOLO-OBB转换 | ✅ | 789 train/139 val/232 test，dataset.yaml就绪 |
+| 实际训练权重 (`best.pt`) | ⏳ | 需安装ultralytics后运行 `bash data/train_ssdd.sh` |
 
 ---
 
@@ -168,10 +170,12 @@ pytest tests/ -v        # 验证全部通过
 
 ### 立即可做（无阻塞）
 
-- [ ] **运行 `setup_env.sh`** 安装依赖环境
+- [ ] **运行 `setup_env.sh`** 安装依赖环境（ultralytics, rasterio, transformers）
 - [x] ~~实现 `run_pipeline.py`~~ ✅ 已完成
 - [x] ~~实现 MockDetector~~ ✅ 已完成
+- [x] ~~SSDD数据转换~~ ✅ 已完成（789+139+232 images）
 - [ ] **跑端到端冒烟**：`python run_pipeline.py --image 任意图片.jpg --region 测试区域`
+- [ ] **训练YOLOv8m-OBB**：`bash data/train_ssdd.sh`（需先安装ultralytics）
 
 ### 依赖安装后可做
 
