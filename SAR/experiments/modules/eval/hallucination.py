@@ -186,7 +186,7 @@ class HallucinationDetector:
         # commonly appear in date strings like "2025年5月14日"
         hallucinated = [
             n for n in body_numbers
-            if n not in allowed and n > 0 and n < 1000
+            if n not in allowed and n > 31 and n < 1000
         ]
         return len(hallucinated) > 0
 

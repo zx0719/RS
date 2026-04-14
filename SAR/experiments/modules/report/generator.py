@@ -478,7 +478,7 @@ class LocalModelGenerator(ReportGenerator):
         self,
         model_path: str,
         device: str = "auto",
-        max_new_tokens: int = 512,
+        max_new_tokens: int = 2048,
         enable_thinking: bool = False,
         temperature: float = 0.2,
     ) -> None:
@@ -580,10 +580,10 @@ class LocalModelGenerator(ReportGenerator):
         }
         if self.device == "auto":
             load_kwargs["device_map"] = "auto"
-            load_kwargs["torch_dtype"] = torch.float16
+            load_kwargs["torch_dtype"] = torch.bfloat16
         elif "cuda" in self.device:
             load_kwargs["device_map"] = self.device
-            load_kwargs["torch_dtype"] = torch.float16
+            load_kwargs["torch_dtype"] = torch.bfloat16
         else:
             load_kwargs["torch_dtype"] = torch.float32
 
@@ -638,10 +638,12 @@ class LocalModelGenerator(ReportGenerator):
         ]
 
         # 使用 chat template 格式化输入（正确处理特殊 token）
+        # Qwen3 支持 enable_thinking 参数直接控制 CoT
         text = self._tokenizer.apply_chat_template(  # type: ignore[union-attr]
             messages,
             tokenize=False,
             add_generation_prompt=True,
+            enable_thinking=self.enable_thinking,
         )
 
         inputs = self._tokenizer(  # type: ignore[union-attr]
@@ -653,8 +655,11 @@ class LocalModelGenerator(ReportGenerator):
             output_ids = self._model.generate(  # type: ignore[union-attr]
                 **inputs,
                 max_new_tokens=self.max_new_tokens,
-                temperature=self.temperature,
-                do_sample=self.temperature > 0,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.8,
+                top_k=20,
+                repetition_penalty=1.05,
                 pad_token_id=self._tokenizer.eos_token_id,  # type: ignore[union-attr]
             )
 

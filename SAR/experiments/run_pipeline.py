@@ -276,7 +276,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.model and Path(args.model).exists():
             from modules.detector import DetectorTool  # type: ignore[import]
-            detector = DetectorTool(args.model)
+            # Use SSDD class map for models trained on SSDD (single "ship" class)
+            class_map = None
+            if "ssdd" in Path(args.model).parts or "ssdd" in args.model.lower():
+                from modules.detector.class_map import SSDD_CLASS_MAP  # type: ignore[import]
+                class_map = SSDD_CLASS_MAP
+            detector = DetectorTool(args.model, class_map=class_map)
             logger.info("Using DetectorTool with weights: %s", args.model)
         else:
             from modules.detector.mock_detector import MockDetector  # type: ignore[import]

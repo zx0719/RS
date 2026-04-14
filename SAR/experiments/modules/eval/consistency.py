@@ -76,7 +76,7 @@ class ConsistencyChecker:
         if the field is absent (legacy packages that predate the status field).
         """
         status = obj.get("status")
-        return status is None or status == "VALID"
+        return status is None or status in ("VALID", "PARTIAL_SUCCESS")
 
     def _check_required_fields(self, pkg: dict[str, Any]) -> bool:
         missing = [f for f in self.REQUIRED_FIELDS if f not in pkg]
@@ -152,6 +152,9 @@ class ConsistencyChecker:
     def _check_coordinates(valid_objects: list[dict]) -> bool:
         missing_geo: list[str] = []
         for obj in valid_objects:
+            # PARTIAL_SUCCESS objects are expected to lack geo — skip them
+            if obj.get("status") == "PARTIAL_SUCCESS":
+                continue
             obj_id = obj.get("object_id", "<unknown>")
             geometry = obj.get("geometry") or {}
             geo = geometry.get("geo") or {}

@@ -21,7 +21,7 @@ from typing import Any
 
 import numpy as np
 
-from .class_map import get_class_descriptor
+from .class_map import CLASS_MAP, get_class_descriptor, ClassDescriptor
 
 # ---------------------------------------------------------------------------
 # Conditional ultralytics import — module is still usable without it (e.g.
@@ -120,6 +120,7 @@ class DetectorTool:
         score_thresh: float = 0.25,
         nms_thresh: float = 0.5,
         device: str = "cuda:0",
+        class_map: dict[int, str] | None = None,
     ) -> None:
         if not _ULTRALYTICS_AVAILABLE:
             raise ImportError(
@@ -131,6 +132,7 @@ class DetectorTool:
         self.score_thresh = score_thresh
         self.nms_thresh = nms_thresh
         self.device = device
+        self._class_map = class_map  # None → use default CLASS_MAP
 
         self._model: Any = YOLO(str(self.model_path))
 
@@ -186,7 +188,15 @@ class DetectorTool:
                     float(cx), float(cy), float(w), float(h), angle_deg
                 )
                 bbox_aa = _bbox_axis_aligned(polygon)
-                class_desc = get_class_descriptor(cls_id)
+                if self._class_map is not None:
+                    code = self._class_map.get(cls_id, "other_vessel")
+                    from .class_map import UNKNOWN_CLASS
+                    class_desc = next(
+                        (v for v in CLASS_MAP.values() if v["code"] == code),
+                        UNKNOWN_CLASS,
+                    )
+                else:
+                    class_desc = get_class_descriptor(cls_id)
 
                 obj: dict = {
                     "object_id": _generate_object_id(),
