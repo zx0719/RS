@@ -117,3 +117,21 @@ def get_class_descriptor(class_index: int) -> ClassDescriptor:
     Falls back to UNKNOWN_CLASS if the index is not in CLASS_MAP.
     """
     return CLASS_MAP.get(class_index, UNKNOWN_CLASS)
+
+
+# ---------------------------------------------------------------------------
+# SSDD-specific class mapping
+#
+# The SSDD (SAR Ship Detection Dataset) only has one class: "ship" (index 0).
+# When running inference with a model trained on SSDD, map index 0 to the
+# "other_vessel" code in our Evidence Package schema (no fine-grained type
+# information is available from SSDD-trained models).
+#
+# Usage during inference:
+#     from modules.detector.class_map import SSDD_CLASS_MAP
+#     code = SSDD_CLASS_MAP.get(yolo_class_idx, "other_vessel")
+# ---------------------------------------------------------------------------
+
+SSDD_CLASS_MAP: dict[int, str] = {
+    0: "other_vessel",   # SSDD class "ship" → our generic vessel code
+}
