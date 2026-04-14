@@ -434,6 +434,26 @@ def _parse_ssdd_xml(xml_path: Path) -> tuple[int, int, list[dict]]:
     return img_w, img_h, objects
 
 
+def _rbox_to_corners(cx: float, cy: float, w: float, h: float, theta_deg: float) -> list[float]:
+    """Convert rotated box (cx, cy, w, h, theta_deg) to 4 corner coordinates.
+
+    Returns [x1, y1, x2, y2, x3, y3, x4, y4] in pixel coordinates.
+    theta_deg follows OpenCV convention: positive = clockwise.
+    """
+    theta = math.radians(theta_deg)
+    cos_t = math.cos(theta)
+    sin_t = math.sin(theta)
+    hw, hh = w / 2.0, h / 2.0
+    # Four corners relative to center before rotation
+    offsets = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
+    corners: list[float] = []
+    for dx, dy in offsets:
+        x = cx + dx * cos_t - dy * sin_t
+        y = cy + dx * sin_t + dy * cos_t
+        corners.extend([x, y])
+    return corners
+
+
 def convert_ssdd_to_yolo_obb(
     ssdd_root: str | Path,
     output_root: str | Path,
@@ -442,12 +462,14 @@ def convert_ssdd_to_yolo_obb(
 ) -> dict[str, int]:
     """Convert SSDD RBox VOC format to YOLO-OBB format for one split.
 
-    YOLO-OBB label line format::
+    YOLO-OBB label line format (Ultralytics OBB standard)::
 
-        <class_id> <cx_norm> <cy_norm> <w_norm> <h_norm> <angle_rad>
+        <class_id> <x1> <y1> <x2> <y2> <x3> <y3> <x4> <y4>
 
-    Where coordinates are normalised by image width/height and angle is in
-    radians, converted from the SSDD theta (degrees) field.
+    Where (x1..x4, y1..y4) are the four corner coordinates of the rotated box,
+    normalised by image width/height to [0, 1].  This 9-column format is what
+    ``yolo obb train`` expects; the previous 6-column (cx cy w h angle) format
+    is NOT compatible with the Ultralytics trainer.
 
     Parameters
     ----------
@@ -503,19 +525,20 @@ def convert_ssdd_to_yolo_obb(
         stem = xml_path.stem
         img_w, img_h, objs = _parse_ssdd_xml(xml_path)
 
-        # Write YOLO-OBB label
+        # Write YOLO-OBB label (9 columns: class x1 y1 x2 y2 x3 y3 x4 y4)
         label_path = label_out_dir / f"{stem}.txt"
         with label_path.open("w", encoding="utf-8") as f_out:
             for obj in objs:
-                angle_rad = obj["theta_deg"] * math.pi / 180.0
-                cx_norm = obj["cx"] / img_w
-                cy_norm = obj["cy"] / img_h
-                w_norm  = obj["w"]  / img_w
-                h_norm  = obj["h"]  / img_h
-                f_out.write(
-                    f"0 {cx_norm:.6f} {cy_norm:.6f} "
-                    f"{w_norm:.6f} {h_norm:.6f} {angle_rad:.6f}\n"
+                corners = _rbox_to_corners(
+                    obj["cx"], obj["cy"], obj["w"], obj["h"], obj["theta_deg"]
                 )
+                # Normalise x coords by img_w, y coords by img_h
+                norm = [
+                    corners[i] / img_w if i % 2 == 0 else corners[i] / img_h
+                    for i in range(8)
+                ]
+                coords_str = " ".join(f"{v:.6f}" for v in norm)
+                f_out.write(f"0 {coords_str}\n")
 
         n_objects += len(objs)
 

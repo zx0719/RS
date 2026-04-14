@@ -36,8 +36,8 @@ echo "  epochs : ${EPOCHS}"
 echo "  device : ${DEVICE}"
 echo "  batch  : ${BATCH}"
 
-python -m ultralytics train \
-    model=yolov8m-obb.pt \
+yolo obb train \
+    model=yolov8m-obb.yaml \
     data=/home/zhuxiang/RS/SAR/experiments/data/ssdd_yolo_obb/dataset.yaml \
     epochs="${EPOCHS}" \
     imgsz=640 \
