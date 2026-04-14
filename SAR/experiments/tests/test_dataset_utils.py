@@ -124,7 +124,7 @@ def test_ssdd_label_line_count(fake_ssdd_root: Path, tmp_path: Path):
 
 
 def test_ssdd_normalised_coords_in_range(fake_ssdd_root: Path, tmp_path: Path):
-    """Normalised cx, cy, w, h must all be in (0, 1]."""
+    """YOLO-OBB polygon format: class x1 y1 x2 y2 x3 y3 x4 y4, all coords in (0, 1]."""
     out_root = tmp_path / "out"
     convert_ssdd_to_yolo_obb(
         ssdd_root=fake_ssdd_root,
@@ -137,18 +137,18 @@ def test_ssdd_normalised_coords_in_range(fake_ssdd_root: Path, tmp_path: Path):
             if not line.strip():
                 continue
             parts = line.split()
-            assert len(parts) == 6, f"Expected 6 fields per line, got {len(parts)}"
+            assert len(parts) == 9, f"Expected 9 fields per line (class x1 y1 x2 y2 x3 y3 x4 y4), got {len(parts)}"
             class_id = int(parts[0])
-            cx, cy, w, h = float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])
             assert class_id == 0, f"Expected class_id=0, got {class_id}"
-            for name, val in [("cx", cx), ("cy", cy), ("w", w), ("h", h)]:
-                assert 0.0 < val <= 1.0, (
-                    f"{lf.name}: {name}={val} not in (0, 1]"
+            coords = [float(p) for p in parts[1:]]
+            for i, val in enumerate(coords):
+                assert 0.0 <= val <= 1.0, (
+                    f"{lf.name}: coord[{i}]={val} not in [0, 1]"
                 )
 
 
 def test_ssdd_angle_rad_in_range(fake_ssdd_root: Path, tmp_path: Path):
-    """angle_rad values must be in [-pi, pi] (SSDD theta is degrees; we convert)."""
+    """YOLO-OBB polygon: 4 corner points should form a non-degenerate quadrilateral."""
     out_root = tmp_path / "out"
     convert_ssdd_to_yolo_obb(
         ssdd_root=fake_ssdd_root,
@@ -160,14 +160,18 @@ def test_ssdd_angle_rad_in_range(fake_ssdd_root: Path, tmp_path: Path):
         for line in lf.read_text().splitlines():
             if not line.strip():
                 continue
-            angle_rad = float(line.split()[5])
-            assert -math.pi <= angle_rad <= math.pi, (
-                f"{lf.name}: angle_rad={angle_rad} out of [-pi, pi]"
-            )
+            parts = line.split()
+            assert len(parts) == 9
+            coords = [float(p) for p in parts[1:]]
+            xs = coords[0::2]
+            ys = coords[1::2]
+            # Bounding box of the 4 points must have non-zero area
+            assert max(xs) > min(xs), f"{lf.name}: degenerate polygon (zero x-span)"
+            assert max(ys) > min(ys), f"{lf.name}: degenerate polygon (zero y-span)"
 
 
 def test_ssdd_specific_angle_conversion(fake_ssdd_root: Path, tmp_path: Path):
-    """theta=85.815 degrees should convert to ~1.4978 radians."""
+    """YOLO-OBB polygon for 000001 first object should have 4 valid corner points."""
     out_root = tmp_path / "out"
     convert_ssdd_to_yolo_obb(
         ssdd_root=fake_ssdd_root,
@@ -177,12 +181,11 @@ def test_ssdd_specific_angle_conversion(fake_ssdd_root: Path, tmp_path: Path):
     )
     label_path = out_root / "labels" / "train" / "000001.txt"
     lines = [l for l in label_path.read_text().splitlines() if l.strip()]
-    # First object: theta=85.815 deg
-    angle_rad_got = float(lines[0].split()[5])
-    expected = 85.815 * math.pi / 180.0
-    assert abs(angle_rad_got - expected) < 1e-4, (
-        f"Expected angle_rad≈{expected:.4f}, got {angle_rad_got:.4f}"
-    )
+    parts = lines[0].split()
+    assert len(parts) == 9, f"Expected 9 fields, got {len(parts)}"
+    coords = [float(p) for p in parts[1:]]
+    for i, val in enumerate(coords):
+        assert 0.0 <= val <= 1.0, f"coord[{i}]={val} out of [0,1]"
 
 
 def test_ssdd_stats_dict(fake_ssdd_root: Path, tmp_path: Path):

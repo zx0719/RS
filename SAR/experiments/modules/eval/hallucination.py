@@ -181,13 +181,11 @@ class HallucinationDetector:
         # Always allow 0
         allowed.add(0)
 
-        body_numbers = self._extract_numbers(body)
-        # Filter out year-like numbers (>=1000) and month/day numbers (<=31) that
-        # commonly appear in date strings like "2025年5月14日"
-        hallucinated = [
-            n for n in body_numbers
-            if n not in allowed and n > 31 and n < 1000
-        ]
+        # Strip date patterns like "2026年4月15日" before extracting numbers,
+        # so year/month/day digits don't get flagged as hallucinations.
+        body_stripped = re.sub(r"\d{4}年\d{1,2}月\d{1,2}日", "", body)
+        body_numbers = self._extract_numbers(body_stripped)
+        hallucinated = [n for n in body_numbers if n not in allowed and n > 0]
         return len(hallucinated) > 0
 
     @staticmethod
