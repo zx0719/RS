@@ -25,6 +25,17 @@ data/sardet_yolo_hbb/
 # Training runs (weights, logs — commit yaml configs only)
 runs/
 
+# Model weights (large files)
+*.pt
+*.pth
+*.onnx
+
+# Output documents
+output/
+
+# Claude local config
+.claude/
+
 # Misc
 .DS_Store
 *.log
