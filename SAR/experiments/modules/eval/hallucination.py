@@ -140,8 +140,17 @@ class HallucinationDetector:
     # Keep a simpler alias for internal use
     @staticmethod
     def _extract_numbers(text: str) -> list[int]:
-        """Backward-compatible alias — delegates to _extract_count_numbers."""
-        return [int(m) for m in re.findall(r"(?<![.\d])\d+(?![.\d])", text)]
+        """Extract standalone integer counts from text.
+
+        Excludes numbers that are:
+        - Part of decimal literals (e.g. 120.236)
+        - Attached to letters (e.g. GF-6, Qwen3, B-52)
+        - Part of identifiers with hyphens (e.g. GF-6)
+        """
+        # First strip satellite/model identifiers like GF-6, GF-3, Qwen3
+        cleaned = re.sub(r"[A-Za-z][-\w]*\d+\w*", "", text)
+        cleaned = re.sub(r"\d+\w*[A-Za-z]\w*", "", cleaned)
+        return [int(m) for m in re.findall(r"(?<![.\d])\d+(?![.\d])", cleaned)]
 
     def _check_numbers(
         self, body: str, statistics: dict[str, Any]

@@ -277,8 +277,14 @@ class GeoLocalizer:
                 # Affine: (a=col_scale, b=col_shear, c=x_origin,
                 #          d=row_shear, e=row_scale, f=y_origin)
                 self._gt = (t.c, t.a, t.b, t.f, t.d, t.e)
-                self.gsd_x_m = abs(t.a)
-                self.gsd_y_m = abs(t.e)
+
+                # GSD in metres: if CRS is geographic (degrees), convert
+                if ds.crs.is_geographic:
+                    self.gsd_x_m = abs(t.a) * 111320
+                    self.gsd_y_m = abs(t.e) * 111320
+                else:
+                    self.gsd_x_m = abs(t.a)
+                    self.gsd_y_m = abs(t.e)
 
                 try:
                     epsg = ds.crs.to_epsg()
@@ -322,13 +328,19 @@ class GeoLocalizer:
                 return
 
             self._gt = tuple(gt)
-            self.gsd_x_m = abs(gt[1])
-            self.gsd_y_m = abs(gt[5])
 
             srs = osr.SpatialReference()
             srs.ImportFromWkt(wkt)
             epsg = srs.GetAttrValue("AUTHORITY", 1)
             self.crs = f"EPSG:{epsg}" if epsg else wkt
+
+            # GSD in metres: convert if geographic CRS (degrees)
+            if srs.IsGeographic():
+                self.gsd_x_m = abs(gt[1]) * 111320
+                self.gsd_y_m = abs(gt[5]) * 111320
+            else:
+                self.gsd_x_m = abs(gt[1])
+                self.gsd_y_m = abs(gt[5])
 
             self.has_geo = True
             ds = None
