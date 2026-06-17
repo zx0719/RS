@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "dataset": "MSAR-1.0 large scene original images",
+  "root": "/mnt/data/mm_data/SAR/dection/MSAR-1.0/MSAR-1.0 dataset - large scene original images",
+  "notes": "Large SAR scene tests reference existing remote files in-place. Do not copy these source images into the project directory.",
+  "cases": [
+    {
+      "name": "ship2_large_tiff",
+      "relative_path": "船/ship2.tiff",
+      "scene_category": "ship",
+      "region_name": "MSAR船只大场景ship2",
+      "region_type": "anchorage",
+      "usage": "Primary ship large-scene pipeline test.",
+      "expected_width": 8386,
+      "expected_height": 9224,
+      "expected_size_mb": 295,
+      "bands": 1,
+      "bit_depth": null,
+      "format": "TIFF",
+      "suites": ["smoke", "full"]
+    },
+    {
+      "name": "ship1_large_tiff",
+      "relative_path": "船/ship1.tiff",
+      "scene_category": "ship",
+      "region_name": "MSAR船只大场景ship1",
+      "region_type": "anchorage",
+      "usage": "Ship scene regression test to avoid overfitting the large-scene path to one image.",
+      "expected_width": 8109,
+      "expected_height": 8556,
+      "expected_size_mb": 265,
+      "bands": 1,
+      "bit_depth": null,
+      "format": "TIFF",
+      "suites": ["full"]
+    },
+    {
+      "name": "plane_ultralong_png",
+      "relative_path": "飞机/plane.png",
+      "scene_category": "aircraft",
+      "region_name": "MSAR飞机超长边大场景plane",
+      "region_type": "airbase",
+      "usage": "Largest stress case for near-10000x20000 tiling and 16-bit PNG handling.",
+      "expected_width": 9431,
+      "expected_height": 16409,
+      "expected_size_mb": 183,
+      "bands": 1,
+      "bit_depth": 16,
+      "format": "PNG",
+      "suites": ["smoke", "full"]
+    },
+    {
+      "name": "airport2_large_tiff",
+      "relative_path": "机场、油罐/airport2.tiff",
+      "scene_category": "airport_oil_tank",
+      "region_name": "MSAR机场油罐大场景airport2",
+      "region_type": "airport",
+      "usage": "Airport and oil-tank scene test for multi-class infrastructure context.",
+      "expected_width": 7207,
+      "expected_height": 9443,
+      "expected_size_mb": 260,
+      "bands": 1,
+      "bit_depth": null,
+      "format": "TIFF",
+      "suites": ["full"]
+    },
+    {
+      "name": "bridge_large_tiff",
+      "relative_path": "桥梁/bridge.tiff",
+      "scene_category": "bridge",
+      "region_name": "MSAR桥梁大场景bridge",
+      "region_type": "unknown",
+      "usage": "Infrastructure scene test for bridge targets.",
+      "expected_width": 6939,
+      "expected_height": 8512,
+      "expected_size_mb": 225,
+      "bands": 1,
+      "bit_depth": null,
+      "format": "TIFF",
+      "suites": ["full"]
+    }
+  ]
+}

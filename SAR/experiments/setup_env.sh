@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# setup_env.sh — Bootstrap the SAR Intelligence Pipeline conda environment
+# setup_env.sh — Legacy conda bootstrap for the SAR Intelligence Pipeline
 #
 # Usage:
 #   bash setup_env.sh
@@ -19,6 +19,12 @@
 # =============================================================================
 
 set -euo pipefail
+
+echo "[WARN] setup_env.sh is the legacy conda installer."
+echo "[WARN] Prefer uv profiles instead:"
+echo "       bash setup_uv.sh base|dev|geo|det|api|llm|all"
+echo "       see ENVIRONMENT.md"
+echo ""
 
 ENV_NAME="sar-intel"
 PYTHON_VERSION="3.10"

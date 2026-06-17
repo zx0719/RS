@@ -3,7 +3,7 @@ test_e2e_smoke.py — End-to-end smoke tests for the M5→M6 pipeline.
 
 Tests:
   1. test_template_fallback_pipeline   — full pipeline using template fallback (no LLM)
-  2. test_local_qwen_generate          — local Qwen3-4B inference (skipped if model absent)
+  2. test_local_qwen_generate          — GPU-only local Qwen3-4B inference (skipped if model/GPU absent)
   3. test_quality_gate_on_smoke_output — QualityGate pass after template fallback
   4. test_docx_template_used           — verify .docx file is well-formed and non-trivial
 
@@ -301,11 +301,17 @@ def test_template_fallback_pipeline() -> None:
     reason=f"Qwen3-4B model not available at {_QWEN_MODEL_PATH}",
 )
 def test_local_qwen_generate() -> None:
-    """Load Qwen3-4B locally and generate a report body."""
+    """Load Qwen3-4B on CUDA only and generate a report body."""
     try:
         import transformers  # noqa: F401
     except ImportError:
         pytest.skip("transformers is not installed")
+    try:
+        import torch  # type: ignore
+    except ImportError:
+        pytest.skip("torch is not installed")
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA is not visible; GPU-only local Qwen smoke test skipped")
 
     from modules.report.generator import LocalModelGenerator
 
@@ -316,7 +322,7 @@ def test_local_qwen_generate() -> None:
         "战斗机", "轰炸机", "运输机", "预警机", "直升机", "其他飞机",
     }
 
-    gen = LocalModelGenerator(model_path=_QWEN_MODEL_PATH, device="auto")
+    gen = LocalModelGenerator(model_path=_QWEN_MODEL_PATH, device="cuda:0", require_gpu=True)
     result = gen.generate(_fresh_mock_pkg())
 
     body = result.get("report", {}).get("body", "")

@@ -31,6 +31,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from modules.report.collab_config import collaborative_generator_kwargs, resolve_collaborative_config, resolve_vlm_config
+
 # ---------------------------------------------------------------------------
 # Logging setup — configured before any module imports so handlers are ready
 # ---------------------------------------------------------------------------
@@ -91,9 +93,21 @@ def _build_parser() -> argparse.ArgumentParser:
     # Optional — LLM
     parser.add_argument(
         "--llm-path",
-        default="/mnt/data/zhuxiang/Qwen/Qwen3-4B",
+        default=None,
         metavar="PATH",
-        help="Local LLM model path (default: /mnt/data/zhuxiang/Qwen/Qwen3-4B)",
+        help="Local LLM model path. Prefer SAR_SMALL_LLM_PATH in --env-file for collaborative generation.",
+    )
+    parser.add_argument(
+        "--small-llm-path",
+        default=None,
+        metavar="PATH",
+        help="Optional local small-model path for collaborative generation",
+    )
+    parser.add_argument(
+        "--large-llm-path",
+        default=None,
+        metavar="PATH",
+        help="Optional local large-model path for collaborative generation",
     )
     parser.add_argument(
         "--llm-url",
@@ -106,6 +120,81 @@ def _build_parser() -> argparse.ArgumentParser:
         default="Qwen2.5-7B-Instruct",
         metavar="NAME",
         help="Model name passed to the API when --llm-url is used (default: Qwen2.5-7B-Instruct)",
+    )
+    parser.add_argument(
+        "--large-llm-url",
+        default=None,
+        metavar="URL",
+        help="Optional large-model OpenAI-compatible API base URL for collaborative generation",
+    )
+    parser.add_argument(
+        "--large-llm-model-name",
+        default="Qwen2.5-72B-Instruct",
+        metavar="NAME",
+        help="Large-model name used together with --large-llm-url",
+    )
+    parser.add_argument(
+        "--use-collaborative-llm",
+        action="store_true",
+        help="Use CollaborativeReportGenerator for large-scene-aware routing and escalation",
+    )
+    parser.add_argument(
+        "--vlm-url",
+        default=None,
+        metavar="URL",
+        help="Optional VLM OpenAI-compatible API base URL for scene-level description",
+    )
+    parser.add_argument(
+        "--vlm-model",
+        default=None,
+        metavar="NAME",
+        help="Optional VLM model name (overrides env-file if provided)",
+    )
+    parser.add_argument(
+        "--require-vlm",
+        action="store_true",
+        default=None,
+        help="Require a successful VLM scene description; fail if VLM is missing or empty",
+    )
+    parser.add_argument(
+        "--env-file",
+        default=None,
+        metavar="PATH",
+        help="Optional .env-style file for collaborative LLM settings",
+    )
+    parser.add_argument(
+        "--llm-device",
+        default=None,
+        metavar="DEVICE",
+        help="Optional local device for collaborative local models, e.g. auto/cpu/cuda:0",
+    )
+    parser.add_argument(
+        "--llm-max-new-tokens",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Optional max_new_tokens for local LLM generation",
+    )
+    parser.add_argument(
+        "--require-gpu",
+        action="store_true",
+        default=None,
+        help="Require CUDA-visible GPU for local LLM inference; fail instead of using CPU",
+    )
+    fallback_group = parser.add_mutually_exclusive_group()
+    fallback_group.add_argument(
+        "--allow-template-fallback",
+        dest="allow_template_fallback",
+        action="store_true",
+        default=None,
+        help="Allow rule-template report fallback when LLM generation is unavailable",
+    )
+    fallback_group.add_argument(
+        "--no-template-fallback",
+        dest="allow_template_fallback",
+        action="store_false",
+        default=None,
+        help="Disable rule-template report fallback; require a real LLM backend",
     )
 
     # Optional — output
@@ -178,9 +267,18 @@ def _summarise_objects(objects: list[dict[str, Any]]) -> str:
 
 def _llm_source_tag(pipeline: Any) -> str:
     from modules.report.generator import LocalModelGenerator  # type: ignore[import]
+    from modules.report.collaborative import CollaborativeReportGenerator  # type: ignore[import]
     gen = getattr(pipeline, "_generator", None)
     if gen is None:
         return "unknown"
+    if isinstance(gen, CollaborativeReportGenerator):
+        backends = gen.describe_backends()
+        small = backends["small_llm"]
+        large = backends["large_llm"]
+        return (
+            f"Collaborative(small={small['model_name']}@{small['base_url'] or 'disabled'}, "
+            f"large={large['model_name']}@{large['base_url'] if large else 'disabled'})"
+        )
     if isinstance(gen, LocalModelGenerator):
         return "LocalModelGenerator"
     base_url = getattr(gen, "base_url", None)
@@ -255,7 +353,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     logger = _configure_logging(args.log_level)
-
     # Resolve draft mode
     draft_mode = _resolve_draft_mode(args)
     mode_label = "draft" if draft_mode else "final"
@@ -300,7 +397,7 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("Step 1: Running detection on %s", args.image)
     objects: list[dict[str, Any]] = []
     try:
-        objects = detector.detect(args.image)
+        objects, _vis = detector.detect(args.image)
         logger.info("Detected %d objects", len(objects))
     except Exception as exc:
         logger.error("Detection failed: %s", exc)
@@ -324,6 +421,34 @@ def main(argv: list[str] | None = None) -> int:
             "Evidence Package built: %s | status=%s",
             package.get("package_id"), package.get("status"),
         )
+        vlm_config = resolve_vlm_config(
+            env_file=args.env_file,
+            vlm_url=args.vlm_url,
+            vlm_model=args.vlm_model,
+            require_vlm=args.require_vlm,
+        )
+        if vlm_config.vlm_base_url:
+            from modules.report.vlm_describer import VLMDescriber  # type: ignore[import]
+            from modules.report.vlm_trace import attach_vlm_scene_description  # type: ignore[import]
+            describer = VLMDescriber(
+                base_url=vlm_config.vlm_base_url,
+                model_name=vlm_config.vlm_model_name or "qwen3-vl-4b",
+                api_key=vlm_config.api_key or "EMPTY",
+                timeout=vlm_config.timeout,
+            )
+            desc = describer.describe(args.image)
+            if desc:
+                attach_vlm_scene_description(
+                    package,
+                    description=desc,
+                    describer=describer,
+                    image_path=args.image,
+                )
+                logger.info("VLM 场景描述已写入 evidence")
+            elif vlm_config.require_vlm:
+                raise RuntimeError("SAR_REQUIRE_VLM=1 but VLM returned an empty scene description.")
+        elif vlm_config.require_vlm:
+            raise RuntimeError("SAR_REQUIRE_VLM=1 but SAR_VLM_URL/--vlm-url is empty.")
     except Exception as exc:
         logger.error("Fatal: Evidence Package build failed: %s", exc)
         return 1
@@ -333,20 +458,70 @@ def main(argv: list[str] | None = None) -> int:
     pipeline = None
     try:
         from modules.report.pipeline import ReportPipeline  # type: ignore[import]
-        if args.llm_url:
-            pipeline = ReportPipeline(
-                base_url=args.llm_url,
-                model_name=args.llm_model_name,
+        collab_config = resolve_collaborative_config(
+            cache_dir=str(output_dir / ".report_cache"),
+            env_file=args.env_file,
+            small_url=args.llm_url,
+            small_model=args.llm_model_name if args.llm_url else None,
+            small_model_path=args.small_llm_path,
+            large_url=args.large_llm_url,
+            large_model=args.large_llm_model_name if args.large_llm_url else None,
+            large_model_path=args.large_llm_path,
+            local_device=args.llm_device,
+            local_max_new_tokens=args.llm_max_new_tokens,
+            require_gpu=args.require_gpu,
+            allow_template_fallback=args.allow_template_fallback,
+        )
+        effective_llm_url = collab_config.small_base_url
+        effective_llm_model = collab_config.small_model_name
+        effective_large_llm_url = collab_config.large_base_url
+        effective_large_llm_model = collab_config.large_model_name
+        effective_small_local_path = collab_config.small_model_path
+        effective_large_local_path = collab_config.large_model_path
+        if effective_llm_url or effective_small_local_path:
+            if (
+                args.use_collaborative_llm
+                or effective_large_llm_url
+                or effective_large_local_path
+                or effective_small_local_path
+                or collab_config.require_gpu
+                or not collab_config.allow_template_fallback
+            ):
+                pipeline = ReportPipeline.from_collaborative_models(
+                    **collaborative_generator_kwargs(collab_config),
+                )
+                logger.info(
+                    "Using collaborative LLMs: small=%s (%s|%s), large=%s (%s|%s)",
+                    collab_config.small_model_name,
+                    collab_config.small_base_url,
+                    collab_config.small_model_path,
+                    collab_config.large_model_name,
+                    collab_config.large_base_url,
+                    collab_config.large_model_path,
+                )
+            else:
+                pipeline = ReportPipeline(
+                    base_url=effective_llm_url,
+                    model_name=effective_llm_model,
+                    allow_template_fallback=collab_config.allow_template_fallback,
+                )
+                logger.info("Using API-based LLM: %s", effective_llm_url)
+        elif args.llm_path and Path(args.llm_path).exists():
+            pipeline = ReportPipeline.from_local_model(
+                args.llm_path,
+                device=args.llm_device or collab_config.local_device,
+                max_new_tokens=collab_config.local_max_new_tokens,
+                require_gpu=collab_config.require_gpu,
+                allow_template_fallback=collab_config.allow_template_fallback,
             )
-            logger.info("Using API-based LLM: %s", args.llm_url)
-        elif Path(args.llm_path).exists():
-            pipeline = ReportPipeline.from_local_model(args.llm_path)
             logger.info("Using local LLM: %s", args.llm_path)
         else:
+            if not collab_config.allow_template_fallback:
+                logger.error("LLM is required but no model backend is configured.")
+                return 1
             pipeline = ReportPipeline()
             logger.warning(
-                "LLM not available (path not found: %s) — using template fallback",
-                args.llm_path,
+                "LLM not configured — using template fallback",
             )
     except Exception as exc:
         logger.error("Fatal: ReportPipeline initialisation failed: %s", exc)
@@ -367,7 +542,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     except Exception as exc:
         logger.error("Report generation failed: %s", exc)
-        logger.warning("Continuing with un-rendered package")
+        return 1
 
     # ── Step 4: Quality check ─────────────────────────────────────────────────
     logger.info("Step 4: Running Quality Gate")

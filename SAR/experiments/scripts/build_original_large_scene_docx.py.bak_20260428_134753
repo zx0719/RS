@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from modules.report.docx_assembler import DocxAssembler
+
+
+SOURCE_ROOT = Path("/home/zhuxiang/RS/SAR/experiments/output/large_scene")
+OUTPUT_ROOT = Path("/home/zhuxiang/RS/SAR/experiments/output/large_scene_original_format")
+TEMPLATE = "/home/zhuxiang/RS/SAR/需求/成品.docx"
+
+
+def main() -> None:
+    summary = json.loads((SOURCE_ROOT / "full_run_summary.json").read_text(encoding="utf-8"))
+    OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+
+    outputs: list[dict[str, str]] = []
+    assembler = DocxAssembler()
+
+    for case in summary["cases"]:
+        case_name = case["case_name"]
+        case_dir = SOURCE_ROOT / case_name
+        evidence_path = case_dir / f"{case_name}_evidence.json"
+        overview_path = case_dir / f"{case_name}_overview.jpg"
+        out_dir = OUTPUT_ROOT / case_name
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        package = json.loads(evidence_path.read_text(encoding="utf-8"))
+
+        attachments = package.setdefault("attachments", {})
+        if overview_path.exists():
+            attachments["annotated_image"] = {
+                "uri": f"file://{overview_path}",
+                "role": "large_scene_overview_as_target_distribution",
+            }
+
+        report = package.setdefault("report", {})
+        report.setdefault("title", "航天通报")
+        if not report.get("body"):
+            report["body"] = "（正文待生成）"
+
+        docx_path = assembler.assemble(
+            package,
+            output_dir=str(out_dir),
+            template_path=TEMPLATE,
+            draft_mode=True,
+            include_image=True,
+        )
+
+        package.setdefault("report", {})["docx"] = {
+            "uri": f"file://{docx_path}",
+            "template_version": DocxAssembler.TEMPLATE_VERSION,
+        }
+        package["status"] = "DOCX_RENDERED"
+
+        updated_evidence_path = out_dir / f"{case_name}_original_format_evidence.json"
+        updated_evidence_path.write_text(
+            json.dumps(package, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        outputs.append(
+            {
+                "case_name": case_name,
+                "docx_path": docx_path,
+                "evidence_path": str(updated_evidence_path),
+                "source_overview": str(overview_path),
+            }
+        )
+
+    manifest_path = OUTPUT_ROOT / "original_format_docx_manifest.json"
+    manifest_path.write_text(json.dumps(outputs, ensure_ascii=False, indent=2), encoding="utf-8")
+    for item in outputs:
+        print(item["docx_path"])
+
+
+if __name__ == "__main__":
+    main()

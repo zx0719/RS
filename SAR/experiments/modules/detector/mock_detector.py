@@ -17,8 +17,8 @@ from .class_map import CLASS_MAP, ClassDescriptor
 # Class code sets
 # ---------------------------------------------------------------------------
 
-_SHIP_CODES: list[str] = ["destroyer", "frigate", "carrier", "replenishment", "amphibious"]
-_AIRCRAFT_CODES: list[str] = ["fighter", "transport", "helicopter"]
+_SHIP_CODES: list[str] = ["ship"]
+_AIRCRAFT_CODES: list[str] = ["aircraft"]
 
 # Build lookup: code -> ClassDescriptor
 _CODE_TO_DESCRIPTOR: dict[str, ClassDescriptor] = {

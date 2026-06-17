@@ -379,6 +379,7 @@ class CaptionToEvidenceConverter:
             {
                 "code": code,
                 "name_cn": _CODE_TO_CN.get(code, code),
+                "super_class": "ship" if code in _SHIP_CODES else "aircraft",
                 "count": cnt,
             }
             for code, cnt in sorted(

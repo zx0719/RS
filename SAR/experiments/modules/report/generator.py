@@ -17,11 +17,16 @@ import logging
 import re
 from copy import deepcopy
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+from modules.class_labels import normalize_by_class_list
 
 from .prompt_templates import (
     _build_class_list_text,
     _fmt_acquisition_time,
+    build_prompt_payload,
+    build_refine_prompt_payload,
     build_system_prompt,
     build_user_prompt,
 )
@@ -36,8 +41,31 @@ logger = logging.getLogger(__name__)
 
 _SHIP_UNITS = {
     "carrier", "destroyer", "frigate", "replenishment",
-    "amphibious", "other_vessel",
+    "amphibious", "other_vessel", "ship",
 }
+_AIRCRAFT_UNITS = {
+    "fighter", "bomber", "transport", "aew", "helicopter",
+    "other_aircraft", "aircraft",
+}
+
+
+def _mentions_labeled_count(
+    body: str,
+    label_terms: list[str],
+    count: int,
+    units: list[str],
+) -> bool:
+    """Return True when text clearly links a label term to a count and unit."""
+    count_text = str(count)
+    for label in label_terms:
+        for unit in units:
+            patterns = [
+                rf"{re.escape(label)}\D{{0,12}}?{count_text}\s*{re.escape(unit)}",
+                rf"{count_text}\s*{re.escape(unit)}\D{{0,12}}?{re.escape(label)}",
+            ]
+            if any(re.search(pattern, body) for pattern in patterns):
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -69,11 +97,13 @@ class ReportGenerator:
         base_url: str | None = None,
         api_key: str | None = None,
         timeout: int = 60,
+        allow_template_fallback: bool = True,
     ) -> None:
         self.model_name = model_name
         self.base_url = base_url.rstrip("/") if base_url else None
         self.api_key = api_key or "EMPTY"
         self.timeout = timeout
+        self.allow_template_fallback = allow_template_fallback
         self._table_builder = TableBuilder()
 
     # ------------------------------------------------------------------
@@ -115,6 +145,8 @@ class ReportGenerator:
         # 尝试 LLM 生成
         body: str | None = None
         source_tag = "template_v1"
+        selected_backend: dict[str, Any] | None = None
+        attempts: list[dict[str, Any]] = []
 
         if self.base_url is not None:
             try:
@@ -124,14 +156,30 @@ class ReportGenerator:
                 ok, reason = self._post_validate(body, statistics)
                 if not ok:
                     logger.warning("后验证失败：%s，切换到模板 fallback", reason)
+                    attempts.append({"role": "llm", "status": "invalid", "reason": reason})
                     body = None
                     source_tag = "template_v1"
+                else:
+                    attempts.append({"role": "llm", "status": "used"})
+                    selected_backend = self._selected_backend_metadata("llm", source_tag, "used")
             except Exception as exc:
                 logger.warning("LLM 调用失败：%s，切换到模板 fallback", exc)
+                attempts.append({"role": "llm", "status": "error", "reason": str(exc)})
                 body = None
 
         if body is None:
+            if not self.allow_template_fallback:
+                self._attach_generation_trace(
+                    pkg,
+                    selected_source=None,
+                    selected_backend=None,
+                    attempts=attempts,
+                )
+                raise RuntimeError(
+                    "No LLM backend produced a valid report and template fallback is disabled."
+                )
             body = self._template_fallback(pkg)
+            attempts.append({"role": "template", "status": "used"})
 
         # 构建表格（程序化，不经过 LLM）
         component_table = self._table_builder.build_component_table(objects)
@@ -162,12 +210,70 @@ class ReportGenerator:
             "component_table": component_table,
             "equipment_table": equipment_table,
         }
+        self._attach_generation_trace(
+            pkg,
+            selected_source=source_tag,
+            selected_backend=selected_backend,
+            attempts=attempts,
+        )
 
         # 推进状态
         pkg["status"] = "REPORT_DRAFTED"
         pkg["updated_at"] = datetime.now(tz=timezone.utc).isoformat()
 
         return pkg
+
+    def _backend_trace_metadata(self) -> dict[str, Any]:
+        return {
+            "mode": "api",
+            "model_name": self.model_name,
+            "base_url": self.base_url,
+            "model_path": getattr(self, "model_path", None),
+            "require_gpu": getattr(self, "require_gpu", False),
+            "cuda_available": None,
+            "allow_template_fallback": self.allow_template_fallback,
+        }
+
+    def _selected_backend_metadata(
+        self,
+        role: str,
+        source: str,
+        status: str,
+    ) -> dict[str, Any]:
+        metadata = self._backend_trace_metadata()
+        metadata.update(
+            {
+                "role": role,
+                "source": source,
+                "selection_status": status,
+            }
+        )
+        return metadata
+
+    def _attach_generation_trace(
+        self,
+        pkg: dict,
+        *,
+        selected_source: str | None,
+        selected_backend: dict[str, Any] | None,
+        attempts: list[dict[str, Any]],
+    ) -> None:
+        report_context = pkg.setdefault("report_context", {})
+        generation_trace = report_context.setdefault("generation_trace", {})
+        backend_role = "llm"
+        if isinstance(selected_backend, dict) and selected_backend.get("role"):
+            backend_role = str(selected_backend["role"])
+        generation_trace.update(
+            {
+                "route": generation_trace.get("route", "direct_llm"),
+                "selected_source": selected_source,
+                "selected_backend": selected_backend,
+                "available_backends": {
+                    backend_role: self._backend_trace_metadata(),
+                },
+                "attempts": attempts,
+            }
+        )
 
     # ------------------------------------------------------------------
     # LLM 调用
@@ -185,8 +291,9 @@ class ReportGenerator:
             base_url=f"{self.base_url}",
             api_key=self.api_key,
         )
-        system_prompt = build_system_prompt()
-        user_prompt = build_user_prompt(evidence)
+        prompt_payload = build_prompt_payload(evidence)
+        system_prompt = prompt_payload["system_prompt"]
+        user_prompt = prompt_payload["user_prompt"] + " /no_think"  # 关闭 Qwen3 CoT
 
         response = client.chat.completions.create(
             model=self.model_name,
@@ -196,16 +303,19 @@ class ReportGenerator:
             ],
             temperature=0.2,
             max_tokens=512,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             timeout=self.timeout,
         )
-        return response.choices[0].message.content.strip()
+        raw = response.choices[0].message.content.strip()
+        return re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
 
     def _call_llm_requests(self, evidence: dict) -> str:
         """纯 requests 实现的 OpenAI-compatible 调用（openai SDK 不可用时使用）。"""
         import requests  # type: ignore
 
-        system_prompt = build_system_prompt()
-        user_prompt = build_user_prompt(evidence)
+        prompt_payload = build_prompt_payload(evidence)
+        system_prompt = prompt_payload["system_prompt"]
+        user_prompt = prompt_payload["user_prompt"] + " /no_think"
 
         payload = {
             "model": self.model_name,
@@ -215,6 +325,7 @@ class ReportGenerator:
             ],
             "temperature": 0.2,
             "max_tokens": 512,
+            "chat_template_kwargs": {"enable_thinking": False},
         }
         headers = {
             "Content-Type": "application/json",
@@ -228,7 +339,61 @@ class ReportGenerator:
         )
         resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"]["content"].strip()
+        raw = data["choices"][0]["message"]["content"].strip()
+        return re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+
+    def call_llm_with_prompt(self, system_prompt: str, user_prompt: str) -> str:
+        """Call the configured LLM with explicit prompts."""
+        try:
+            import openai  # type: ignore
+        except ImportError:
+            return self._call_llm_requests_with_prompt(system_prompt, user_prompt)
+
+        client = openai.OpenAI(
+            base_url=f"{self.base_url}",
+            api_key=self.api_key,
+        )
+        response = client.chat.completions.create(
+            model=self.model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt + " /no_think"},
+            ],
+            temperature=0.2,
+            max_tokens=512,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+            timeout=self.timeout,
+        )
+        raw = response.choices[0].message.content.strip()
+        return re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+
+    def _call_llm_requests_with_prompt(self, system_prompt: str, user_prompt: str) -> str:
+        import requests  # type: ignore
+
+        payload = {
+            "model": self.model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt + " /no_think"},
+            ],
+            "temperature": 0.2,
+            "max_tokens": 512,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}",
+        }
+        resp = requests.post(
+            f"{self.base_url}/chat/completions",
+            json=payload,
+            headers=headers,
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        raw = data["choices"][0]["message"]["content"].strip()
+        return re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
 
     # ------------------------------------------------------------------
     # 后验证
@@ -243,11 +408,45 @@ class ReportGenerator:
             (True, "") 表示通过；(False, reason) 表示未通过。
         """
         totals = statistics.get("totals", {})
-        by_class = statistics.get("by_class", [])
+        by_class = normalize_by_class_list(statistics.get("by_class", []))
+
+        if not body or not body.strip():
+            return False, "正文为空"
+
+        aggregate_counts = {
+            "ship": int(totals.get("ships") or 0),
+            "aircraft": int(totals.get("aircraft") or 0),
+            "ground": 0,
+            "infrastructure": 0,
+        }
+        for cls_item in by_class:
+            super_class = cls_item.get("super_class", "")
+            if super_class in {"ground", "infrastructure"}:
+                aggregate_counts[super_class] += int(cls_item.get("count") or 0)
+
+        required_mentions = [
+            ("舰船", aggregate_counts["ship"], ["舰船"], ["艘"]),
+            ("飞机", aggregate_counts["aircraft"], ["飞机"], ["架"]),
+            (
+                "地面目标",
+                aggregate_counts["ground"],
+                ["地面目标", "坦克", "装甲车"],
+                ["个", "辆"],
+            ),
+            (
+                "基础设施",
+                aggregate_counts["infrastructure"],
+                ["基础设施", "桥梁", "港口", "跑道", "停机坪", "机库"],
+                ["处", "个", "座"],
+            ),
+        ]
+        for label, count, label_terms, units in required_mentions:
+            if count > 0 and not _mentions_labeled_count(body, label_terms, count, units):
+                return False, f"正文未明确提及{label}数量 {count}"
 
         # 检查总舰船数
-        ships = totals.get("ships", 0)
-        aircraft = totals.get("aircraft", 0)
+        ships = aggregate_counts["ship"]
+        aircraft = aggregate_counts["aircraft"]
 
         # 简单数字提取：查找正文中所有"N艘"/"N架"
         ship_matches = re.findall(r"(\d+)\s*艘", body)
@@ -278,7 +477,9 @@ class ReportGenerator:
             if not name_cn or count == 0:
                 continue
             unit = "艘" if code in _SHIP_UNITS else "架"
-            pattern = rf"{re.escape(name_cn)}\s*(\d+)\s*{unit}"
+            if code not in _SHIP_UNITS and code not in _AIRCRAFT_UNITS:
+                continue
+            pattern = rf"{re.escape(name_cn)}\D{{0,8}}?(\d+)\s*{unit}"
             match = re.search(pattern, body)
             if match:
                 mentioned = int(match.group(1))
@@ -318,28 +519,46 @@ class ReportGenerator:
 
         inp = evidence.get("input", {})
         metadata = inp.get("metadata", {})
-        mission = inp.get("mission", {})
+        # 兼容 mission 字段和 task 字段两种写法
+        mission = inp.get("mission", inp.get("task", {}))
         scene = evidence.get("scene", {})
         statistics = evidence.get("statistics", {})
         totals = statistics.get("totals", {})
         by_class = statistics.get("by_class", [])
         spatial_summary = statistics.get("spatial_summary", {})
         confidence_summary = statistics.get("confidence_summary", {})
+        scene_description = scene.get("scene_description", "")
 
         # 使用 package_id 确定随机种子，保证相同输入产生相同输出
         pkg_id = evidence.get("package_id", "")
         rng = _random.Random(hash(pkg_id))
 
         satellite = metadata.get("satellite", "侦察卫星")
+        # 去掉末尾多余的"卫星"字样，避免"XX卫星卫星"
+        if satellite.endswith("卫星"):
+            satellite = satellite[:-2] or satellite
         acq_time_raw = metadata.get("acquisition_time", "")
         date_cn = _fmt_acquisition_time(acq_time_raw) if acq_time_raw else "某日"
         region_name = mission.get("region_name", "目标区域")
         scene_type_cn = scene.get("scene_type_cn", "")
         region_type = mission.get("region_type", "unknown")
 
-        all_objects = totals.get("all_objects", 0)
-        ships = totals.get("ships", 0)
-        aircraft = totals.get("aircraft", 0)
+        # 按 super_class 分组统计（兼容 v4 新类别体系）
+        _SHIP_SUPER = {"ship"}
+        _AIRCRAFT_SUPER = {"aircraft"}
+        _GROUND_SUPER = {"ground"}
+        _INFRA_SUPER = {"infrastructure"}
+
+        ship_items = [c for c in by_class if c.get("super_class", "") in _SHIP_SUPER or c.get("code", "") in _SHIP_UNITS]
+        aircraft_items = [c for c in by_class if c.get("super_class", "") in _AIRCRAFT_SUPER or c.get("code", "") in _AIRCRAFT_UNITS]
+        ground_items = [c for c in by_class if c.get("super_class", "") in _GROUND_SUPER]
+        infra_items = [c for c in by_class if c.get("super_class", "") in _INFRA_SUPER]
+
+        ships = sum(c.get("count", 0) for c in ship_items)
+        aircraft = sum(c.get("count", 0) for c in aircraft_items)
+        ground_total = sum(c.get("count", 0) for c in ground_items)
+        infra_total = sum(c.get("count", 0) for c in infra_items)
+        all_objects = totals.get("objects", totals.get("all_objects", ships + aircraft + ground_total + infra_total))
 
         needs_caution = confidence_summary.get("review_required_count", 0) > 0
         caution_prefix = "疑似" if needs_caution else ""
@@ -350,6 +569,10 @@ class ReportGenerator:
             summary_parts.append(f"舰船{ships}艘")
         if aircraft > 0:
             summary_parts.append(f"飞机{aircraft}架")
+        if ground_total > 0:
+            summary_parts.append(f"地面目标{ground_total}个")
+        if infra_total > 0:
+            summary_parts.append(f"基础设施目标{infra_total}处")
         summary_str = "、".join(summary_parts) if summary_parts else f"军事目标{all_objects}个"
 
         scene_clause = f"{scene_type_cn}" if scene_type_cn else ""
@@ -365,82 +588,78 @@ class ReportGenerator:
 
         # ── 中段：按类别逐一列举（随机措辞） ─────────────────────────────────
         class_sentences: list[str] = []
-        ship_items = [c for c in by_class if c.get("code", "") in _SHIP_UNITS]
-        aircraft_items = [c for c in by_class if c.get("code", "") not in _SHIP_UNITS]
 
-        if ship_items:
-            ship_parts = []
-            for cls_item in ship_items:
-                name_cn = cls_item.get("name_cn", "舰船")
-                count = cls_item.get("count", 0)
-                if count > 0:
-                    # 随机选择中段措辞
-                    mid_phrase = rng.choice([
-                        f"其中{name_cn}{count}艘",
-                        f"发现{name_cn}{count}艘",
-                        f"识别{name_cn}{count}艘",
-                    ])
-                    ship_parts.append(mid_phrase)
-            if ship_parts:
-                caution_word = "疑似" if needs_caution else "确认"
-                location_clause = (
-                    "目标停泊于港口区域" if region_type == "harbor" else
-                    "目标位于锚地水域" if region_type == "anchorage" else
-                    "目标分布于监测区域"
-                )
-                class_sentences.append(
-                    f"舰船目标共{ships}艘，{caution_word}识别为{'、'.join(ship_parts).replace('其中', '').replace('发现', '').replace('识别', '')}，"
-                    + f"{location_clause}。"
-                )
-                # 修正：直接构建清晰的列举
-                ship_detail_parts = []
-                for cls_item in ship_items:
-                    name_cn = cls_item.get("name_cn", "舰船")
-                    count = cls_item.get("count", 0)
-                    if count > 0:
-                        ship_detail_parts.append(f"{name_cn}{count}艘")
-                ship_detail = "、".join(ship_detail_parts)
+        # 舰船
+        if ship_items and ships > 0:
+            ship_detail_parts = [f"{c['name_cn']}{c['count']}艘" for c in ship_items if c.get("count", 0) > 0]
+            ship_detail = "、".join(ship_detail_parts)
+            location_clause = (
+                "目标停泊于港口区域" if region_type == "harbor" else
+                "目标位于锚地水域" if region_type == "anchorage" else
+                "目标分布于监测区域"
+            )
+            # 只有一个子类时不重复列举，直接说总数
+            if len(ship_detail_parts) == 1 and ship_detail_parts[0] == f"舰船{ships}艘":
+                class_sentences.append(f"舰船目标共{ships}艘，{location_clause}。")
+            else:
                 mid_verb = rng.choice(["其中", "发现", "识别"])
-                class_sentences[-1] = (
-                    f"舰船目标共{ships}艘，{mid_verb}{ship_detail}，"
-                    + f"{location_clause}。"
-                )
+                class_sentences.append(f"舰船目标共{ships}艘，{mid_verb}{ship_detail}，{location_clause}。")
 
-        if aircraft_items:
-            ac_parts = []
-            for cls_item in aircraft_items:
-                name_cn = cls_item.get("name_cn", "飞机")
-                count = cls_item.get("count", 0)
-                if count > 0:
-                    ac_parts.append(f"{name_cn}{count}架")
-            if ac_parts:
-                ac_detail = "、".join(ac_parts)
-                location_clause = (
-                    "停放于机场停机坪" if region_type in ("airport", "airbase") else
-                    "目标分布于监测区域"
-                )
-                mid_verb = rng.choice(["其中", "发现", "识别"])
-                class_sentences.append(
-                    f"飞机目标共{aircraft}架，{mid_verb}{ac_detail}，"
-                    + f"{location_clause}。"
-                )
+        # 飞机
+        if aircraft_items and aircraft > 0:
+            ac_detail_parts = [f"{c['name_cn']}{c['count']}架" for c in aircraft_items if c.get("count", 0) > 0]
+            ac_detail = "、".join(ac_detail_parts)
+            location_clause = (
+                "停放于机场停机坪" if region_type in ("airport", "airbase") else
+                "目标分布于监测区域"
+            )
+            mid_verb = rng.choice(["其中", "发现", "识别"])
+            class_sentences.append(f"飞机目标共{aircraft}架，{mid_verb}{ac_detail}，{location_clause}。")
+
+        # 地面目标（坦克/装甲车等）
+        if ground_items and ground_total > 0:
+            g_detail_parts = [f"{c['name_cn']}{c['count']}辆" for c in ground_items if c.get("count", 0) > 0]
+            g_detail = "、".join(g_detail_parts)
+            mid_verb = rng.choice(["其中", "发现", "识别"])
+            class_sentences.append(f"地面目标共{ground_total}辆，{mid_verb}{g_detail}，目标分布于监测区域。")
+
+        # 基础设施（桥梁/港口等）
+        if infra_items and infra_total > 0:
+            infra_detail_parts = [f"{c['name_cn']}{c['count']}处" for c in infra_items if c.get("count", 0) > 0]
+            infra_detail = "、".join(infra_detail_parts)
+            mid_verb = rng.choice(["其中", "发现", "识别"])
+            class_sentences.append(f"基础设施目标共{infra_total}处，{mid_verb}{infra_detail}，目标分布于监测区域。")
 
         middle_text = "".join(class_sentences)
 
         # ── 末句：随机收尾（无套话） ────────────────────────────────────────
         distribution = spatial_summary.get("distribution", "")
         if distribution:
-            closing_templates = [
-                f"目标{distribution}。",
-                f"上述目标{distribution}，态势研判中。",
-                f"各目标{distribution}，建议持续关注。",
-            ]
+            if scene_description:
+                closing_templates = [
+                    f"{scene_description}。目标{distribution}。",
+                    f"{scene_description}。上述目标{distribution}，态势研判中。",
+                    f"{scene_description}。各目标{distribution}，建议持续关注。",
+                ]
+            else:
+                closing_templates = [
+                    f"目标{distribution}。",
+                    f"上述目标{distribution}，态势研判中。",
+                    f"各目标{distribution}，建议持续关注。",
+                ]
         else:
-            closing_templates = [
-                "建议持续跟踪目标动态。",
-                "上述目标分布情况待进一步核实。",
-                "各目标态势研判中，建议持续关注。",
-            ]
+            if scene_description:
+                closing_templates = [
+                    f"{scene_description}。",
+                    f"{scene_description}。上述目标分布情况待进一步核实。",
+                    f"{scene_description}。各目标态势研判中，建议持续关注。",
+                ]
+            else:
+                closing_templates = [
+                    "建议持续跟踪目标动态。",
+                    "上述目标分布情况待进一步核实。",
+                    "各目标态势研判中，建议持续关注。",
+                ]
         last_sentence = rng.choice(closing_templates)
 
         body = first_sentence + middle_text + last_sentence
@@ -481,14 +700,22 @@ class LocalModelGenerator(ReportGenerator):
         max_new_tokens: int = 2048,
         enable_thinking: bool = False,
         temperature: float = 0.2,
+        require_gpu: bool = False,
+        allow_template_fallback: bool = True,
     ) -> None:
         # 父类以 base_url=None 初始化（强制走 fallback，稍后会覆盖 _call_llm）
-        super().__init__(model_name=str(model_path), base_url=None)
+        super().__init__(
+            model_name=str(model_path),
+            base_url=None,
+            allow_template_fallback=allow_template_fallback,
+        )
         self.model_path = model_path
         self.device = device
         self.max_new_tokens = max_new_tokens
         self.enable_thinking = enable_thinking
         self.temperature = temperature
+        self.require_gpu = require_gpu
+        self.allow_template_fallback = allow_template_fallback
         # 懒加载：__init__ 不触碰 GPU/transformers
         self._pipeline = None
         self._tokenizer = None
@@ -562,6 +789,12 @@ class LocalModelGenerator(ReportGenerator):
                 "torch 未安装，请执行：pip install torch"
             ) from exc
 
+        if self.require_gpu and not torch.cuda.is_available():
+            raise RuntimeError(
+                "GPU is required for local LLM inference, but CUDA is not visible "
+                "to this Python process."
+            )
+
         # 加载前打印 VRAM 估算（仅供参考，不阻塞）
         try:
             self.estimate_vram_gb(self.model_path)
@@ -625,20 +858,27 @@ class LocalModelGenerator(ReportGenerator):
         except ImportError as exc:
             raise ImportError("torch 未安装，请执行：pip install torch") from exc
 
-        system_prompt = build_system_prompt()
-        user_prompt = build_user_prompt(evidence)
+        prompt_payload = build_prompt_payload(evidence)
+        return self.call_llm_with_prompt(
+            prompt_payload["system_prompt"],
+            prompt_payload["user_prompt"],
+        )
 
-        # Qwen3 思维链控制：生产环境追加 /no_think 跳过 CoT
-        if not self.enable_thinking:
-            user_prompt = user_prompt + " /no_think"
+    def call_llm_with_prompt(self, system_prompt: str, user_prompt: str) -> str:  # type: ignore[override]
+        if self._pipeline is None:
+            self._load_pipeline()
 
+        try:
+            import torch  # type: ignore
+        except ImportError as exc:
+            raise ImportError("torch 未安装，请执行：pip install torch") from exc
+
+        prompt_text = user_prompt + (" /no_think" if not self.enable_thinking else "")
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
+            {"role": "user", "content": prompt_text},
         ]
 
-        # 使用 chat template 格式化输入（正确处理特殊 token）
-        # Qwen3 支持 enable_thinking 参数直接控制 CoT
         text = self._tokenizer.apply_chat_template(  # type: ignore[union-attr]
             messages,
             tokenize=False,
@@ -651,26 +891,34 @@ class LocalModelGenerator(ReportGenerator):
             return_tensors="pt",
         ).to(self._model.device)  # type: ignore[union-attr]
 
+        generate_kwargs: dict[str, Any] = {
+            "max_new_tokens": self.max_new_tokens,
+            "repetition_penalty": 1.05,
+            "pad_token_id": self._tokenizer.eos_token_id,  # type: ignore[union-attr]
+        }
+        if self.temperature > 0.2:
+            generate_kwargs.update(
+                {
+                    "do_sample": True,
+                    "temperature": self.temperature,
+                    "top_p": 0.8,
+                    "top_k": 20,
+                }
+            )
+        else:
+            generate_kwargs["do_sample"] = False
+
         with torch.no_grad():
             output_ids = self._model.generate(  # type: ignore[union-attr]
                 **inputs,
-                max_new_tokens=self.max_new_tokens,
-                do_sample=True,
-                temperature=0.7,
-                top_p=0.8,
-                top_k=20,
-                repetition_penalty=1.05,
-                pad_token_id=self._tokenizer.eos_token_id,  # type: ignore[union-attr]
+                **generate_kwargs,
             )
 
-        # 只解码新生成的 token，跳过输入部分
         new_tokens = output_ids[0][inputs["input_ids"].shape[1]:]
         raw_output = self._tokenizer.decode(  # type: ignore[union-attr]
             new_tokens,
             skip_special_tokens=True,
         )
-
-        # 剥离 <think>...</think>（enable_thinking=True 时模型可能仍输出）
         return self._strip_thinking(raw_output)
 
     # ------------------------------------------------------------------
@@ -696,6 +944,8 @@ class LocalModelGenerator(ReportGenerator):
 
         body: str | None = None
         source_tag = "template_v1"
+        selected_backend: dict[str, Any] | None = None
+        attempts: list[dict[str, Any]] = []
 
         try:
             body = self._call_llm(pkg)
@@ -704,14 +954,30 @@ class LocalModelGenerator(ReportGenerator):
             ok, reason = self._post_validate(body, statistics)
             if not ok:
                 logger.warning("后验证失败：%s，切换到模板 fallback", reason)
+                attempts.append({"role": "local_llm", "status": "invalid", "reason": reason})
                 body = None
                 source_tag = "template_v1"
+            else:
+                attempts.append({"role": "local_llm", "status": "used"})
+                selected_backend = self._selected_backend_metadata("local_llm", source_tag, "used")
         except Exception as exc:
             logger.warning("本地模型调用失败：%s，切换到模板 fallback", exc)
+            attempts.append({"role": "local_llm", "status": "error", "reason": str(exc)})
             body = None
 
         if body is None:
+            if not self.allow_template_fallback:
+                self._attach_generation_trace(
+                    pkg,
+                    selected_source=None,
+                    selected_backend=None,
+                    attempts=attempts,
+                )
+                raise RuntimeError(
+                    "No local LLM backend produced a valid report and template fallback is disabled."
+                )
             body = self._template_fallback(pkg)
+            attempts.append({"role": "template", "status": "used"})
 
         component_table = self._table_builder.build_component_table(objects)
         equipment_table = self._table_builder.build_equipment_table(objects)
@@ -740,9 +1006,34 @@ class LocalModelGenerator(ReportGenerator):
             "component_table": component_table,
             "equipment_table": equipment_table,
         }
+        self._attach_generation_trace(
+            pkg,
+            selected_source=source_tag,
+            selected_backend=selected_backend,
+            attempts=attempts,
+        )
 
         pkg["status"] = "REPORT_DRAFTED"
         from datetime import datetime, timezone
         pkg["updated_at"] = datetime.now(tz=timezone.utc).isoformat()
 
         return pkg
+
+    def _backend_trace_metadata(self) -> dict[str, Any]:  # type: ignore[override]
+        cuda_available = False
+        try:
+            import torch  # type: ignore
+            cuda_available = torch.cuda.is_available()
+        except Exception:
+            cuda_available = False
+        return {
+            "mode": "local",
+            "model_name": self.model_name,
+            "base_url": None,
+            "model_path": self.model_path,
+            "model_path_exists": Path(self.model_path).exists(),
+            "require_gpu": self.require_gpu,
+            "cuda_available": cuda_available,
+            "local_gpu_verified": self.require_gpu and cuda_available,
+            "allow_template_fallback": self.allow_template_fallback,
+        }

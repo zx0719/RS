@@ -20,6 +20,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from modules.class_labels import get_class_name_cn, infer_super_class
 from modules.geo.preprocess import ImagePreprocessor
 from modules.geo.geolocalize import GeoLocalizer
 from .schema_validator import validate_evidence_package
@@ -37,22 +38,6 @@ _SHIP_CODES = frozenset({
 _AIRCRAFT_CODES = frozenset({
     "fighter", "bomber", "transport", "aew", "helicopter", "other_aircraft",
 })
-
-# Chinese names for class codes (mirrors class_map.py)
-_CODE_TO_CN: dict[str, str] = {
-    "carrier": "航空母舰",
-    "destroyer": "驱逐舰",
-    "frigate": "护卫舰",
-    "replenishment": "补给舰",
-    "amphibious": "两栖舰",
-    "other_vessel": "其他舰船",
-    "fighter": "战斗机",
-    "bomber": "轰炸机",
-    "transport": "运输机",
-    "aew": "预警机",
-    "helicopter": "直升机",
-    "other_aircraft": "其他飞机",
-}
 
 _LOW_CONFIDENCE_THRESHOLD = 0.5
 _REVIEW_CONFIDENCE_THRESHOLD = 0.4
@@ -199,7 +184,8 @@ def _compute_statistics(
     by_class = [
         {
             "code": code,
-            "name_cn": _CODE_TO_CN.get(code, code),
+            "name_cn": get_class_name_cn(code),
+            "super_class": infer_super_class(code),
             "count": cnt,
         }
         for code, cnt in class_counter.most_common()

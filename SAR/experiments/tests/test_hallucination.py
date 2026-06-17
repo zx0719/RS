@@ -46,6 +46,36 @@ class TestHallucinationDetector:
         result = detector.check(minimal_evidence_package)
         assert result["number_hallucination"] is False
 
+    def test_satellite_name_before_count_does_not_disable_detection(
+        self, minimal_evidence_package: dict
+    ) -> None:
+        """Regression: a latin sensor name immediately before the Chinese count
+        clause must NOT swallow the real counts.
+
+        Previously _extract_numbers used ``\\w`` (which matches CJK), so
+        "GF-6卫星发现舰船3艘" was stripped to "" and the fabricated count 3
+        silently passed. The body here claims 3 ships while statistics say 1,
+        so a hallucination MUST be detected.
+        """
+        pkg = minimal_evidence_package
+        pkg["report"]["body"] = "据GF-6卫星侦察，发现舰船3艘，停泊于港口。"
+        detector = HallucinationDetector()
+        result = detector.check(pkg)
+        assert result["number_hallucination"] is True
+
+    def test_calendar_numbers_not_flagged(
+        self, minimal_evidence_package: dict
+    ) -> None:
+        """Year/month/day/hour digits are valid metadata, not counts."""
+        pkg = minimal_evidence_package
+        # statistics say 1 object; only calendar digits + the matching "1" appear
+        pkg["report"]["body"] = (
+            "据GF-3卫星2026年4月15日14时侦察，共发现目标 1 艘，停泊于港口西侧。"
+        )
+        detector = HallucinationDetector()
+        result = detector.check(pkg)
+        assert result["number_hallucination"] is False
+
     # ------------------------------------------------------------------
     # Class hallucination
     # ------------------------------------------------------------------

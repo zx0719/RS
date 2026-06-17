@@ -17,6 +17,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .collaborative import CollaborativeReportGenerator
 from .docx_assembler import DocxAssembler
 from .generator import LocalModelGenerator, ReportGenerator
 
@@ -61,6 +62,42 @@ class ReportPipeline:
         """
         instance = cls.__new__(cls)
         instance._generator = LocalModelGenerator(model_path, **kwargs)  # type: ignore[arg-type]
+        instance._assembler = DocxAssembler()
+        return instance
+
+    @classmethod
+    def from_collaborative_models(
+        cls,
+        small_model_name: str,
+        small_base_url: str | None = None,
+        small_model_path: str | None = None,
+        large_model_name: str | None = None,
+        large_base_url: str | None = None,
+        large_model_path: str | None = None,
+        api_key: str | None = None,
+        timeout: int = 60,
+        cache_dir: str | None = None,
+        local_device: str = "auto",
+        local_max_new_tokens: int = 2048,
+        require_gpu: bool = False,
+        allow_template_fallback: bool = True,
+    ) -> "ReportPipeline":
+        instance = cls.__new__(cls)
+        instance._generator = CollaborativeReportGenerator(
+            small_model_name=small_model_name,
+            small_base_url=small_base_url,
+            small_model_path=small_model_path,
+            large_model_name=large_model_name,
+            large_base_url=large_base_url,
+            large_model_path=large_model_path,
+            api_key=api_key,
+            timeout=timeout,
+            cache_dir=cache_dir,
+            local_device=local_device,
+            local_max_new_tokens=local_max_new_tokens,
+            require_gpu=require_gpu,
+            allow_template_fallback=allow_template_fallback,
+        )
         instance._assembler = DocxAssembler()
         return instance
 

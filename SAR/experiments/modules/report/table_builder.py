@@ -13,12 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-
-# 大类映射：class.super_class code -> 中文大类名
-_SUPER_CLASS_CN: dict[str, str] = {
-    "ship": "舰船",
-    "aircraft": "飞机",
-}
+from modules.class_labels import get_class_name_cn, get_super_class_name_cn
 
 # 审核状态中文映射
 _REVIEW_STATUS_CN: dict[str, str] = {
@@ -64,8 +59,12 @@ class TableBuilder:
             geo = obj.get("geometry", {}).get("geo", {})
 
             super_class = cls.get("super_class", "")
-            target_type = _SUPER_CLASS_CN.get(super_class, super_class)
-            sub_type = cls.get("name_cn") or cls.get("code", "未知")
+            target_type = get_super_class_name_cn(super_class)
+            sub_type = get_class_name_cn(
+                cls.get("code"),
+                cls.get("name_cn"),
+                super_class,
+            )
 
             lon = geo.get("center_lon")
             lat = geo.get("center_lat")
@@ -109,7 +108,11 @@ class TableBuilder:
             geo = obj.get("geometry", {}).get("geo", {})
             audit = obj.get("audit", {})
 
-            equipment_type = cls.get("name_cn") or cls.get("code", "未知")
+            equipment_type = get_class_name_cn(
+                cls.get("code"),
+                cls.get("name_cn"),
+                cls.get("super_class"),
+            )
             lon = geo.get("center_lon")
             lat = geo.get("center_lat")
 

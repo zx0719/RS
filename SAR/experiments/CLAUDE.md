@@ -15,7 +15,13 @@
   ↓
 [M1] 预处理与元数据解析
   ↓
-[M2] 感知工具层（YOLOv8-OBB 舰船/飞机检测 + GDAL坐标地理化 + 统计汇总）
+[M2] 感知工具层
+  ├── YOLOv8-OBB 检测（ship/aircraft/tank/bridge/harbor，v4 5类）
+  ├── [v5 新增] 船型细分类器（ResNet18，6类民用船型，解耦独立模块）
+  │     FUSAR-Ship1.0 → cargo_ship/tanker/fishing/tug_service/passenger/other_vessel
+  │     接入方式：ship ROI裁剪 → 分类推理 → objects[].attributes.ship_subtype
+  ├── GDAL坐标地理化
+  └── 统计汇总
   ↓
 [M3] 证据融合层（检测结果 + 坐标 + 元数据 → 标准Evidence JSON）
   ↓
@@ -25,6 +31,15 @@
   ↓
 输出：标准通报.docx + 证据JSON + 标注图
 ```
+
+## v5 船型细分类器（规划中）
+
+- **数据**：FUSAR-Ship1.0，5243张 512×512 SAR芯片，AIS标签
+- **架构**：ResNet18 fine-tune，6类，输入128×128
+- **模块路径**：`modules/classifier/ship_classifier.py`（待创建）
+- **接入**：DetectorTool检测到ship后自动触发，失败时fallback到`ship`
+- **预估工期**：2.5~3天（v4训练结束后启动）
+- **限制**：仅民用船型，军舰细分类待三期军事SAR数据
 
 ## 核心设计原则
 

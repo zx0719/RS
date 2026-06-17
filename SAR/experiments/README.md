@@ -2,7 +2,7 @@
 
 > 输入单景SAR卫星图像及其元数据，系统自动完成目标检测、坐标地理化、结构化证据生成、情报通报正文生成、Word文档组装。
 
-**设计原则：专用感知工具 + 结构化证据 + LLM文本生成 + Word组装**，不做端到端VLM直接生成。
+**设计原则：专用感知工具 + 结构化证据 + small/large LLM 协同 + VLM 场景描述 + Word组装**，不做端到端自由生成式检测。
 
 ---
 
@@ -35,9 +35,20 @@
 ### 1. 安装环境
 
 ```bash
-bash setup_env.sh          # 创建 conda env "sar-intel"，安装所有依赖
-conda activate sar-intel
+bash setup_uv.sh           # 创建轻量 uv dev 环境：运行时依赖 + pytest/ipykernel
 ```
+
+按需安装重依赖：
+
+```bash
+bash setup_uv.sh geo       # + rasterio GeoTIFF 支持
+bash setup_uv.sh det       # + ultralytics/YOLO 检测支持
+bash setup_uv.sh llm       # + torch/transformers 本地 Qwen 推理
+bash setup_uv.sh api       # + OpenAI-compatible API 客户端
+bash setup_uv.sh all       # 全量依赖，不建议日常默认使用
+```
+
+旧 conda 入口 `setup_env.sh` 仍保留作兼容，但日常开发优先使用 `uv`。详见 [ENVIRONMENT.md](ENVIRONMENT.md)。
 
 ### 2. 运行端到端流水线
 
@@ -53,12 +64,59 @@ python run_pipeline.py --image /path/to/image.tif --region 某某军港 \
 python run_pipeline.py --image /path/to/image.tif --region 某某军港 \
     --model runs/detect/ssdd_obb/weights/best.pt \
     --llm-url http://localhost:8000/v1 --final
+
+# 使用协同大小模型
+python run_pipeline.py --image /path/to/image.tif --region 某某军港 \
+    --llm-url http://small-model-host:8000/v1 \
+    --llm-model-name Qwen2.5-7B-Instruct \
+    --large-llm-url http://large-model-host:8100/v1 \
+    --large-llm-model-name Qwen2.5-72B-Instruct \
+    --use-collaborative-llm
 ```
+
+### 2.1 大图 docx 批处理接入协同模型
+
+```bash
+cp .env.collaborative.example .env.collaborative.local
+# 按需填写：
+#   SAR_SMALL_LLM_URL
+#   SAR_LARGE_LLM_URL
+#   SAR_VLM_URL
+
+python scripts/build_original_large_scene_docx.py --env-file .env.collaborative.local
+python scripts/build_large_scene_release_manifest.py
+```
+
+如已有 docx 和 evidence 只需要刷新“大模型参与元数据”，执行：
+
+```bash
+python scripts/refresh_large_scene_metadata.py --env-file .env.collaborative.local
+python scripts/build_large_scene_release_manifest.py
+```
+
+### 2.2 协同验收与阈值调优
+
+```bash
+python scripts/check_collaborative_llm.py --env-file .env.collaborative.local
+python scripts/run_collaborative_acceptance.py --env-file .env.collaborative.local
+python scripts/sweep_collaborative_thresholds.py
+python scripts/recommend_collaborative_thresholds.py
+python scripts/write_recommended_env.py
+python scripts/rerun_with_recommended_env.py
+```
+
+关键输出：
+- `output/large_scene_original_format/collaborative_acceptance_report.json`
+- `output/large_scene_original_format/collaborative_validation_report.json`
+- `output/large_scene_original_format/vlm_validation_report.json`
+- `output/large_scene_original_format/collaborative_route_summary.json`
+- `output/large_scene_original_format/collaborative_threshold_recommendation.json`
+- `.env.collaborative.recommended`
 
 ### 3. 运行测试
 
 ```bash
-pytest tests/ -v
+uv run pytest tests/ -v
 # 76 passed, 1 skipped（Qwen3-4B路径挂载后自动解除skip）
 ```
 
@@ -69,8 +127,10 @@ pytest tests/ -v
 ```
 experiments/
 ├── run_pipeline.py              # 端到端CLI入口
-├── setup_env.sh                 # conda环境一键安装
-├── requirements.txt             # 完整依赖
+├── setup_uv.sh                  # uv环境一键安装（推荐）
+├── setup_env.sh                 # conda环境一键安装（兼容）
+├── pyproject.toml               # uv/PEP 621依赖配置
+├── requirements.txt             # 旧版完整依赖入口
 ├── setup.py                     # 包安装配置
 ├── PROJECT_STATUS.md            # 项目进度看板
 │
@@ -92,10 +152,14 @@ experiments/
 │   │
 │   ├── report/                  # M5+M6: 文本生成+文档组装
 │   │   ├── generator.py         # ReportGenerator（API）/ LocalModelGenerator（本地）
+│   │   ├── collaborative.py     # small/large/refine 协同生成
+│   │   ├── collab_config.py     # 协同模型/阈值/VLM 配置装配
 │   │   ├── prompt_templates.py  # LLM Prompt模板
 │   │   ├── table_builder.py     # 统计表程序化生成
 │   │   ├── docx_assembler.py    # Word文档组装（成品.docx模板）
 │   │   ├── pipeline.py          # ReportPipeline（M5+M6串联）
+│   │   ├── large_scene.py       # 大图 digest / 路由 / 解释
+│   │   ├── vlm_describer.py     # VLM 场景整体描述
 │   │   └── training_utils.py    # SFT训练辅助工具
 │   │
 │   └── eval/                    # M7: 质量评估
@@ -178,13 +242,13 @@ bash data/train_ssdd.sh
 | `transformers` + `torch` | 本地Qwen3-4B推理 | 需安装 |
 | `openai` | API模式LLM调用 | 需安装 |
 
-一键安装：`bash setup_env.sh`
+推荐安装：`bash setup_uv.sh`；旧 conda 安装：`bash setup_env.sh`
 
 ---
 
 ## 进度
 
-详见 [PROJECT_STATUS.md](PROJECT_STATUS.md)
+详见 [PROJECT_STATUS.md](PROJECT_STATUS.md) | 部署要求与分辨率说明详见 [DEPLOYMENT.md](DEPLOYMENT.md)
 
 | 阶段 | 状态 |
 |------|------|

@@ -143,13 +143,25 @@ class HallucinationDetector:
         """Extract standalone integer counts from text.
 
         Excludes numbers that are:
-        - Part of decimal literals (e.g. 120.236)
-        - Attached to letters (e.g. GF-6, Qwen3, B-52)
-        - Part of identifiers with hyphens (e.g. GF-6)
+        - Part of decimal literals (e.g. 120.265)
+        - Part of a latin-prefixed identifier (GF-6, GF-3, Qwen3, B-52, TerraSAR-X1)
+        - Glued to an adjacent ASCII letter (5G, 3D)
+        - Calendar / clock components (2026年, 4月, 15日, 14时)
+
+        IMPORTANT: identifier stripping is restricted to ASCII characters so it
+        never consumes the Chinese count clause that frequently follows a sensor
+        name. The previous implementation used ``\\w`` which matches CJK in
+        Python's default Unicode mode, so a pattern like
+        ``[A-Za-z][-\\w]*\\d+\\w*`` applied to "GF-6卫星发现舰船3艘" greedily ate
+        the whole string — silently discarding the real counts (3) and disabling
+        number-hallucination detection. See test_hallucination for the regression.
         """
-        # First strip satellite/model identifiers like GF-6, GF-3, Qwen3
-        cleaned = re.sub(r"[A-Za-z][-\w]*\d+\w*", "", text)
-        cleaned = re.sub(r"\d+\w*[A-Za-z]\w*", "", cleaned)
+        # 1. Remove calendar / clock numbers (year / month / day / hour / ...).
+        cleaned = re.sub(r"\d+\s*[年月日时分秒]", "", text)
+        # 2. Remove digit-led ASCII tokens like 5G, 3D.
+        cleaned = re.sub(r"\d+[A-Za-z][A-Za-z0-9]*", "", cleaned)
+        # 3. Remove latin-led identifiers like GF-6, Qwen3, B-52, TerraSAR-X1.
+        cleaned = re.sub(r"[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*", "", cleaned)
         return [int(m) for m in re.findall(r"(?<![.\d])\d+(?![.\d])", cleaned)]
 
     def _check_numbers(
@@ -190,10 +202,9 @@ class HallucinationDetector:
         # Always allow 0
         allowed.add(0)
 
-        # Strip date patterns like "2026年4月15日" before extracting numbers,
-        # so year/month/day digits don't get flagged as hallucinations.
-        body_stripped = re.sub(r"\d{4}年\d{1,2}月\d{1,2}日", "", body)
-        body_numbers = self._extract_numbers(body_stripped)
+        # Date/clock digits and sensor identifiers are stripped inside
+        # _extract_numbers, so year/month/day numbers are never flagged.
+        body_numbers = self._extract_numbers(body)
         hallucinated = [n for n in body_numbers if n not in allowed and n > 0]
         return len(hallucinated) > 0
 

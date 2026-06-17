@@ -35,20 +35,54 @@ modules/report — M5 NLG 文本生成 + M6 Word 文档组装
     print(result_pkg["report"]["docx"]["uri"])  # file:///data/output/...docx
 """
 
+from .collab_config import CollaborativeConfig, RouteThresholds, cache_dir_from_manifest, collaborative_generator_kwargs, config_from_env, read_env_file, resolve_collaborative_config, route_thresholds_from_env
+from .collaborative import CollaborativeReportGenerator
 from .docx_assembler import DEFAULT_TEMPLATE_PATH, DocxAssembler, assemble_docx
 from .generator import LocalModelGenerator, ReportGenerator
+from .large_scene import (
+    ROUTE_LARGE,
+    ROUTE_LARGE_REFINE,
+    ROUTE_SMALL,
+    ROUTE_TEMPLATE,
+    attach_large_scene_metadata,
+    build_evidence_digest,
+    choose_generation_route,
+    explain_generation_route,
+    profile_prompt_input,
+)
 from .pipeline import ReportPipeline
-from .prompt_templates import build_system_prompt, build_user_prompt
+from .prompt_templates import build_prompt_payload, build_system_prompt, build_user_prompt
 from .table_builder import TableBuilder
+from .vlm_describer import VLMDescriber
 
 __all__ = [
     "ReportGenerator",
     "LocalModelGenerator",
+    "CollaborativeReportGenerator",
+    "CollaborativeConfig",
+    "RouteThresholds",
     "DocxAssembler",
     "ReportPipeline",
     "TableBuilder",
+    "VLMDescriber",
+    "build_prompt_payload",
     "build_system_prompt",
     "build_user_prompt",
+    "build_evidence_digest",
+    "choose_generation_route",
+    "explain_generation_route",
+    "attach_large_scene_metadata",
+    "profile_prompt_input",
+    "config_from_env",
+    "read_env_file",
+    "resolve_collaborative_config",
+    "collaborative_generator_kwargs",
+    "route_thresholds_from_env",
+    "cache_dir_from_manifest",
+    "ROUTE_TEMPLATE",
+    "ROUTE_SMALL",
+    "ROUTE_LARGE",
+    "ROUTE_LARGE_REFINE",
     "assemble_docx",
     "DEFAULT_TEMPLATE_PATH",
 ]

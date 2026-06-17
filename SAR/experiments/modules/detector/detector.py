@@ -106,10 +106,14 @@ class DetectorTool:
 
     Parameters
     ----------
-    model_path:   Path to the YOLOv8-OBB weights file (`.pt`).
-    score_thresh: Minimum confidence threshold for detections (0–1).
-    nms_thresh:   IoU threshold used during Non-Maximum Suppression.
-    device:       PyTorch device string, e.g. ``"cuda:0"`` or ``"cpu"``.
+    model_path    : Path to the YOLOv8-OBB weights file (`.pt`).
+    score_thresh  : Minimum confidence threshold for detections (0–1).
+    nms_thresh    : IoU threshold used during Non-Maximum Suppression.
+    device        : PyTorch device string, e.g. ``"cuda:0"`` or ``"cpu"``.
+    tile_size     : Tile side length in pixels for large-image tiling (default 640).
+    tile_overlap  : Overlap between adjacent tiles in pixels (default 128, ~20%).
+    tile_threshold: Images larger than this (max side) trigger tiled inference (default 1280).
+    nms_iou       : IoU threshold for cross-tile NMS deduplication (default 0.5).
     """
 
     DETECTOR_VERSION: str = "yolov8-obb-shipair-v1.3"
@@ -121,6 +125,10 @@ class DetectorTool:
         nms_thresh: float = 0.5,
         device: str = "cuda:0",
         class_map: dict[int, str] | None = None,
+        tile_size: int = 640,
+        tile_overlap: int = 128,
+        tile_threshold: int = 1280,
+        nms_iou: float = 0.5,
     ) -> None:
         if not _ULTRALYTICS_AVAILABLE:
             raise ImportError(
@@ -132,7 +140,11 @@ class DetectorTool:
         self.score_thresh = score_thresh
         self.nms_thresh = nms_thresh
         self.device = device
-        self._class_map = class_map  # None → use default CLASS_MAP
+        self._class_map = class_map
+        self.tile_size = tile_size
+        self.tile_overlap = tile_overlap
+        self.tile_threshold = tile_threshold
+        self.nms_iou = nms_iou
 
         self._model: Any = YOLO(str(self.model_path))
 
@@ -140,23 +152,65 @@ class DetectorTool:
     # Public API
     # ------------------------------------------------------------------
 
-    def detect(self, image_uri: str | Path) -> list[dict]:
+    def detect(
+        self,
+        image_uri: str | Path,
+        save_vis: bool = False,
+        vis_dir: str | Path | None = None,
+    ) -> tuple[list[dict], str | None]:
         """Run inference on a single image and return Evidence Package objects.
+
+        For images whose longest side exceeds ``tile_threshold``, tiled
+        inference is used automatically: the image is split into overlapping
+        tiles, each tile is inferred independently, coordinates are mapped
+        back to the original image space, and cross-tile duplicates are
+        removed with NMS.
 
         Parameters
         ----------
-        image_uri:
-            Path (or URI) to the image file. Supports any format readable by
-            OpenCV / PIL, including GeoTIFF (pixel data only; geo-referencing
-            is handled downstream by the geo-pipeline-engineer).
+        image_uri : Path to the image file (GeoTIFF, JPEG, PNG, BMP).
+        save_vis  : If True, save an annotated image with OBB boxes drawn.
+        vis_dir   : Directory for the annotated image (defaults to image dir).
 
         Returns
         -------
-        List of ``objects[]`` dicts conforming to Evidence Package schema v1.0.
-        Each dict is ready to be inserted into ``evidence_package["objects"]``.
+        (objects, vis_path) — objects list and path to annotated image (or None).
         """
+        from PIL import Image as _PILImage
+
         image_path = str(image_uri)
 
+        try:
+            with _PILImage.open(image_path) as _im:
+                img_w, img_h = _im.size
+        except Exception:
+            img_w, img_h = 0, 0
+
+        if img_w > 0 and max(img_w, img_h) > self.tile_threshold:
+            print(
+                f"[tiling] 图像 {img_w}×{img_h} > {self.tile_threshold}，"
+                f"启用切片推理 (tile={self.tile_size}, overlap={self.tile_overlap})"
+            )
+            objects = self._detect_tiled(image_path, img_w, img_h)
+        else:
+            objects = self._detect_single(image_path)
+
+        vis_path: str | None = None
+        if save_vis:
+            from .visualize import save_annotated
+            _vis_dir = vis_dir if vis_dir is not None else Path(image_uri).parent
+            out = save_annotated(image_uri, objects, output_dir=_vis_dir)
+            vis_path = str(out)
+            print(f"标注图保存在: {out}")
+
+        return objects, vis_path
+
+    # ------------------------------------------------------------------
+    # Internal inference methods
+    # ------------------------------------------------------------------
+
+    def _detect_single(self, image_path: str) -> list[dict]:
+        """Run inference on a single image (no tiling). Returns objects[]."""
         results = self._model.predict(
             source=image_path,
             conf=self.score_thresh,
@@ -168,15 +222,13 @@ class DetectorTool:
         objects: list[dict] = []
 
         for result in results:
-            obb = result.obb  # OBBBoxes instance (may be None if no detections)
+            obb = result.obb
             if obb is None or len(obb) == 0:
                 continue
 
-            # Extract tensors as numpy arrays
-            # xywhr: [cx, cy, w, h, angle_rad] — Ultralytics stores angle in radians
-            xywhr = obb.xywhr.cpu().numpy()           # (N, 5)
-            confs = obb.conf.cpu().numpy()             # (N,)
-            class_ids = obb.cls.cpu().numpy().astype(int)  # (N,)
+            xywhr = obb.xywhr.cpu().numpy()
+            confs = obb.conf.cpu().numpy()
+            class_ids = obb.cls.cpu().numpy().astype(int)
 
             for i in range(len(xywhr)):
                 cx, cy, w, h, angle_rad = xywhr[i]
@@ -188,13 +240,17 @@ class DetectorTool:
                     float(cx), float(cy), float(w), float(h), angle_deg
                 )
                 bbox_aa = _bbox_axis_aligned(polygon)
+
                 if self._class_map is not None:
-                    code = self._class_map.get(cls_id, "other_vessel")
                     from .class_map import UNKNOWN_CLASS
-                    class_desc = next(
-                        (v for v in CLASS_MAP.values() if v["code"] == code),
-                        UNKNOWN_CLASS,
-                    )
+                    entry = self._class_map.get(cls_id, UNKNOWN_CLASS)
+                    if isinstance(entry, dict):
+                        class_desc = entry
+                    else:
+                        class_desc = next(
+                            (v for v in CLASS_MAP.values() if v["code"] == entry),
+                            UNKNOWN_CLASS,
+                        )
                 else:
                     class_desc = get_class_descriptor(cls_id)
 
@@ -222,7 +278,6 @@ class DetectorTool:
                             "polygon": [[round(v, 2) for v in pt] for pt in polygon],
                             "bbox_axis_aligned": [round(v, 2) for v in bbox_aa],
                         }
-                        # geometry.geo is intentionally absent — filled by geo-pipeline-engineer
                     },
                     "evidence": {
                         "crop_uri": None,
@@ -234,10 +289,40 @@ class DetectorTool:
                         "reviewer": "",
                     },
                 }
-
                 objects.append(obj)
 
         return objects
+
+    def _detect_tiled(self, image_path: str, img_w: int, img_h: int) -> list[dict]:
+        """Tiled inference for large images. Splits into overlapping tiles,
+        runs _detect_single on each, maps coordinates back, then NMS."""
+        import tempfile
+        from PIL import Image as _PILImage
+        from .tiling import tile_grid, read_image_as_array, shift_object_to_global, nms_objects
+
+        img_arr = read_image_as_array(image_path)
+        windows = tile_grid(img_w, img_h, self.tile_size, self.tile_overlap)
+        print(f"[tiling] 共 {len(windows)} 个 tile")
+
+        raw_objects: list[dict] = []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for idx, (x, y, tw, th) in enumerate(windows):
+                tile_arr = img_arr[y:y + th, x:x + tw]
+                tile_path = str(Path(tmp) / f"tile_{idx:04d}.jpg")
+                _PILImage.fromarray(tile_arr).save(tile_path, quality=92)
+
+                tile_objs = self._detect_single(tile_path)
+                for obj in tile_objs:
+                    raw_objects.append(
+                        shift_object_to_global(obj, x, y, img_w, img_h)
+                    )
+
+        deduped = nms_objects(raw_objects, iou_thresh=self.nms_iou)
+        print(
+            f"[tiling] 原始检测 {len(raw_objects)} 个，NMS后保留 {len(deduped)} 个"
+        )
+        return deduped
 
     # ------------------------------------------------------------------
     # Convenience helpers
@@ -250,7 +335,7 @@ class DetectorTool:
         -------
         Mapping of ``image_uri`` (str) → list of objects.
         """
-        return {str(uri): self.detect(uri) for uri in image_uris}
+        return {str(uri): self.detect(uri)[0] for uri in image_uris}
 
     def __repr__(self) -> str:
         return (

@@ -1,11 +1,27 @@
 """
 class_map.py — YOLO class index → Evidence Package class descriptor
 
-Defines the mapping from integer class indices (as output by the YOLOv8-OBB model)
-to the standardised class fields required by the Evidence Package schema v1.0.
+v4 多类固定ID方案（ID不可更改，扩展只能追加）：
 
-The ordering MUST match the class order in your dataset.yaml `names:` list.
-Edit the list below to reflect the exact class ordering your model was trained on.
+  ID  类别          数据来源                  状态
+  ──────────────────────────────────────────────────────
+  0   ship          SSDD + SAR-Ship-Dataset   ACTIVE
+  1   aircraft      SARDet_100K + SAR-air     ACTIVE
+  2   tank          SARDet_100K               ACTIVE
+  3   bridge        SARDet_100K + MSAR        ACTIVE
+  4   harbor        SARDet_100K               ACTIVE
+  5   runway        待标注                     RESERVED
+  6   taxiway       待标注                     RESERVED
+  7   apron         待标注                     RESERVED
+  8   hangar        待标注                     RESERVED
+  9   shelter       待标注                     RESERVED
+  10  tower         待标注                     RESERVED
+  11  ammo_depot    待标注                     RESERVED
+  12  stopway       待标注                     RESERVED
+  13  liaison       待标注                     RESERVED
+
+RESERVED 类别：训练数据中暂不包含，推理时若检测到输出"预留-XX"，
+不会与已知类别混淆。标注数据就绪后直接加入训练集即可，无需修改ID。
 """
 
 from typing import TypedDict
@@ -14,124 +30,159 @@ from typing import TypedDict
 class ClassDescriptor(TypedDict):
     code: str          # Evidence Package class code
     name_cn: str       # Chinese display name
-    super_class: str   # "ship" | "aircraft"
+    super_class: str   # "ship" | "aircraft" | "ground" | "infrastructure"
     priority: str      # "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"
+    status: str        # "ACTIVE" | "RESERVED"
 
 
 # ---------------------------------------------------------------------------
-# Primary mapping: YOLO index → ClassDescriptor
-#
-# Default ordering follows a typical ship-first, aircraft-second dataset.
-# Adjust indices to match your dataset.yaml exactly.
+# v4 固定类别映射 — ID 与 dataset.yaml names 顺序严格对应
 # ---------------------------------------------------------------------------
 
 CLASS_MAP: dict[int, ClassDescriptor] = {
-    # ── Ships ──────────────────────────────────────────────────────────────
+    # ── 已激活类别（有训练数据）────────────────────────────────────────────
     0: {
-        "code": "carrier",
-        "name_cn": "航空母舰",
+        "code": "ship",
+        "name_cn": "舰船",
         "super_class": "ship",
-        "priority": "CRITICAL",
+        "priority": "HIGH",
+        "status": "ACTIVE",
     },
     1: {
-        "code": "destroyer",
-        "name_cn": "驱逐舰",
-        "super_class": "ship",
+        "code": "aircraft",
+        "name_cn": "飞机",
+        "super_class": "aircraft",
         "priority": "HIGH",
+        "status": "ACTIVE",
     },
     2: {
-        "code": "frigate",
-        "name_cn": "护卫舰",
-        "super_class": "ship",
+        "code": "tank",
+        "name_cn": "坦克/装甲车",
+        "super_class": "ground",
         "priority": "HIGH",
+        "status": "ACTIVE",
     },
     3: {
-        "code": "replenishment",
-        "name_cn": "补给舰",
-        "super_class": "ship",
+        "code": "bridge",
+        "name_cn": "桥梁",
+        "super_class": "infrastructure",
         "priority": "MEDIUM",
+        "status": "ACTIVE",
     },
     4: {
-        "code": "amphibious",
-        "name_cn": "两栖舰",
-        "super_class": "ship",
+        "code": "harbor",
+        "name_cn": "港口",
+        "super_class": "infrastructure",
         "priority": "HIGH",
+        "status": "ACTIVE",
     },
+    # ── 预留类别（待补充标注数据后激活）───────────────────────────────────
     5: {
-        "code": "other_vessel",
-        "name_cn": "其他舰船",
-        "super_class": "ship",
-        "priority": "LOW",
-    },
-    # ── Aircraft ───────────────────────────────────────────────────────────
-    6: {
-        "code": "fighter",
-        "name_cn": "战斗机",
-        "super_class": "aircraft",
+        "code": "runway",
+        "name_cn": "跑道",
+        "super_class": "infrastructure",
         "priority": "HIGH",
+        "status": "RESERVED",
+    },
+    6: {
+        "code": "taxiway",
+        "name_cn": "滑行道",
+        "super_class": "infrastructure",
+        "priority": "MEDIUM",
+        "status": "RESERVED",
     },
     7: {
-        "code": "bomber",
-        "name_cn": "轰炸机",
-        "super_class": "aircraft",
-        "priority": "CRITICAL",
+        "code": "apron",
+        "name_cn": "停机坪",
+        "super_class": "infrastructure",
+        "priority": "MEDIUM",
+        "status": "RESERVED",
     },
     8: {
-        "code": "transport",
-        "name_cn": "运输机",
-        "super_class": "aircraft",
-        "priority": "MEDIUM",
+        "code": "hangar",
+        "name_cn": "机库",
+        "super_class": "infrastructure",
+        "priority": "HIGH",
+        "status": "RESERVED",
     },
     9: {
-        "code": "aew",
-        "name_cn": "预警机",
-        "super_class": "aircraft",
+        "code": "shelter",
+        "name_cn": "飞机掩蔽库",
+        "super_class": "infrastructure",
         "priority": "HIGH",
+        "status": "RESERVED",
     },
     10: {
-        "code": "helicopter",
-        "name_cn": "直升机",
-        "super_class": "aircraft",
+        "code": "tower",
+        "name_cn": "塔台",
+        "super_class": "infrastructure",
         "priority": "MEDIUM",
+        "status": "RESERVED",
     },
     11: {
-        "code": "other_aircraft",
-        "name_cn": "其他飞机",
-        "super_class": "aircraft",
+        "code": "ammo_depot",
+        "name_cn": "弹药库",
+        "super_class": "infrastructure",
+        "priority": "CRITICAL",
+        "status": "RESERVED",
+    },
+    12: {
+        "code": "stopway",
+        "name_cn": "端保险道",
+        "super_class": "infrastructure",
         "priority": "LOW",
+        "status": "RESERVED",
+    },
+    13: {
+        "code": "liaison",
+        "name_cn": "联络道",
+        "super_class": "infrastructure",
+        "priority": "LOW",
+        "status": "RESERVED",
     },
 }
 
-# Fallback descriptor used when the model produces an unknown class index.
+# 未知类别兜底
 UNKNOWN_CLASS: ClassDescriptor = {
-    "code": "other_vessel",
+    "code": "unknown",
     "name_cn": "未知目标",
-    "super_class": "ship",
+    "super_class": "unknown",
     "priority": "LOW",
+    "status": "ACTIVE",
 }
 
 
 def get_class_descriptor(class_index: int) -> ClassDescriptor:
-    """Return the ClassDescriptor for a given YOLO class index.
+    """Return the ClassDescriptor for a given YOLO class index."""
+    desc = CLASS_MAP.get(class_index)
+    if desc is None:
+        return UNKNOWN_CLASS
+    if desc["status"] == "RESERVED":
+        return {
+            "code": desc["code"],
+            "name_cn": f"预留-{desc['name_cn']}",
+            "super_class": desc["super_class"],
+            "priority": desc["priority"],
+            "status": "RESERVED",
+        }
+    return desc
 
-    Falls back to UNKNOWN_CLASS if the index is not in CLASS_MAP.
-    """
-    return CLASS_MAP.get(class_index, UNKNOWN_CLASS)
+
+def get_active_classes() -> dict[int, ClassDescriptor]:
+    """返回所有 ACTIVE 状态的类别（已有训练数据）。"""
+    return {k: v for k, v in CLASS_MAP.items() if v["status"] == "ACTIVE"}
 
 
 # ---------------------------------------------------------------------------
-# SSDD-specific class mapping
-#
-# The SSDD (SAR Ship Detection Dataset) only has one class: "ship" (index 0).
-# When running inference with a model trained on SSDD, map index 0 to the
-# "other_vessel" code in our Evidence Package schema (no fine-grained type
-# information is available from SSDD-trained models).
-#
-# Usage during inference:
-#     from modules.detector.class_map import SSDD_CLASS_MAP
-#     code = SSDD_CLASS_MAP.get(yolo_class_idx, "other_vessel")
+# 历史兼容：v1/v2 单类模型的映射（推理时传入 class_map 参数使用）
 # ---------------------------------------------------------------------------
 
-SSDD_CLASS_MAP: dict[int, str] = {
-    0: "other_vessel",   # SSDD class "ship" → our generic vessel code
+# v1-ssdd-ship: class 0 → ship
+SSDD_CLASS_MAP: dict[int, ClassDescriptor] = {
+    0: CLASS_MAP[0],  # ship
+}
+
+# v2-sardet-aircraft: class 0 → aircraft
+SARDET_AIRCRAFT_CLASS_MAP: dict[int, ClassDescriptor] = {
+    0: CLASS_MAP[1],  # aircraft
 }

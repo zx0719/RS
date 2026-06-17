@@ -25,6 +25,13 @@ Also re-exports the class map utilities for downstream use:
 from .detector import DetectorTool
 from .mock_detector import MockDetector
 from .class_map import CLASS_MAP, UNKNOWN_CLASS, get_class_descriptor
+from .tiling import tile_grid, nms_objects
+
+try:
+    from .visualize import draw_detections, save_annotated
+except Exception:  # pragma: no cover - optional visualization dependency
+    draw_detections = None  # type: ignore[assignment]
+    save_annotated = None  # type: ignore[assignment]
 
 __all__ = [
     "DetectorTool",
@@ -32,4 +39,8 @@ __all__ = [
     "CLASS_MAP",
     "UNKNOWN_CLASS",
     "get_class_descriptor",
+    "draw_detections",
+    "save_annotated",
+    "tile_grid",
+    "nms_objects",
 ]
