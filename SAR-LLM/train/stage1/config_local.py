@@ -49,9 +49,9 @@ class TrainConfig:
     num_image_tokens: int = 195
 
     # 训练超参
-    batch_size: int = 6
+    batch_size: int = 12      # 单卡 A800 80GB；vocab=151936 logits 很大，12 是安全上限
     lr: float = 1e-5
-    max_steps: int = 15000    # 原来 1200 步只跑了 0.32 轮，不够收敛；20000 步约跑 5+ 轮
+    max_steps: int = 22000    # Stage B: 从 step=14000 续训，再跑 8000 步
     max_length: int = 512
 
     grad_clip_norm: float = 1.0
@@ -62,28 +62,26 @@ class TrainConfig:
     fp16: bool  = True       # 开启 AMP 混合精度（GradScaler + autocast）
     # fp16: bool  = False
 
-    # 数值稳定 / 调试
-    debug_nan: bool = True
+    # 数值稳定 / 调试（NaN 修复已验证，关闭 debug 减少开销）
+    debug_nan: bool = False
     debug_print_every: int = 10
-    debug_param_check_after_step: bool = True
-    debug_feat_absmax_threshold: float = 1e4   # 仅告警，不直接丢样本
-    debug_embed_absmax_threshold: float = 1e4  # 仅告警
+    debug_param_check_after_step: bool = False
+    debug_feat_absmax_threshold: float = 1e4
+    debug_embed_absmax_threshold: float = 1e4
 
-    # 双卡 A800 配置：
-    #   projector 在 cuda:0，Qwen 整体放 cuda:1（两卡各司其职，无 pipeline 通信开销）
-    #   若 GPU 显存不足或只有单卡，将 use_multi_gpu=False 且 qwen_device_map=None
-    use_multi_gpu: bool    = True
-    qwen_device_map: str   = "cuda:1"   # 将整个 Qwen 放到 GPU1（GPU0 留给 projector/其他进程）
-    main_device: str       = "cuda:0"   # projector 所在设备
+    # 单卡模式：use_multi_gpu=False，Qwen 和 projector 都在 cuda:0
+    use_multi_gpu: bool    = False
+    qwen_device_map: str   = "cuda:0"
+    main_device: str       = "cuda:0"
 
     # 节省激活显存（以重算时间换空间，约减少 40~60% 激活显存）
     # gradient_checkpointing: bool = True
     gradient_checkpointing: bool = False
 
     # DataLoader
-    num_workers: int        = 4
+    num_workers: int        = 8
     persistent_workers: bool = True
-    prefetch_factor: int    = 2
+    prefetch_factor: int    = 4
     shuffle: bool           = True
     drop_last: bool         = False
 
@@ -97,8 +95,8 @@ class TrainConfig:
     save_name: str = "sar_projector_stage1_sarcap.pt"
 
     # 断点续训（完整 checkpoint，含 optimizer/scaler 状态）
-    resume_ckpt: str | None    = None
-    # resume_ckpt: str | None    = "/mnt/data/qianwentao/checkpoints_sarqwen_2_nograd/checkpoint_step_001100.pt"
+    resume_ckpt: str | None    = "/mnt/data/qianwentao/checkpoints_sarqwen/checkpoint_step_014000.pt"
+    # resume_ckpt: str | None    = None
     save_every_steps: int      = 1000  # 原来 100 步一存，20000 步会产生 200 个文件
     save_full_checkpoint: bool = True
     keep_last_n_checkpoints: int = 10   # 配合 save_every_steps=1000 即可
@@ -106,6 +104,14 @@ class TrainConfig:
     # 从已有 projector 接着训（只加载 projector 权重，optimizer 重置）
     projector_ckpt: str | None = None
     # projector_ckpt: str | None = "/mnt/data/qianwentao/checkpoints_sarqwen_2_nograd/sar_projector_stage1_sarcap.pt"
+
+    # BridgeGuidedProjector：填入线性度实验导出的 W 矩阵路径即可启用
+    # 设为 None 则退回 TokenLinearProjector（兼容旧行为）
+    bridge_ckpt: str | None = "/home/zhuxiang/RS/Connector/experiment/linearity_exp/results_v2/bridge_W_image_sarclip_qwen.pt"
+    bridge_dim_hidden: int  = 1024   # residual MLP 隐层维度
+    # Stage B：解冻 bridge，bridge 用 0.1x lr；需同时设置 resume_ckpt 从 Stage A checkpoint 续训
+    stage_b_unfreeze_bridge: bool = True
+    resume_projector_only: bool   = True   # Stage B 切换时 optimizer 重置
 
     # ===== 混训参数 =====
     # 将某个数据集权重设为 0 即可排除，无需修改 stage

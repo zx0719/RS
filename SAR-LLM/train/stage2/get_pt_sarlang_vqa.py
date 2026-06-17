@@ -31,8 +31,10 @@ get_pt_sarlang_vqa.py
 from __future__ import annotations
 
 import json
+import signal
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -41,7 +43,7 @@ import torch
 # ─────────────────────────────────────────────────────────────
 # 0. sys.path：SARCLIP 库 + 项目 stage1 工具
 # ─────────────────────────────────────────────────────────────
-SARCLIP_QWEN_DIR = Path("/home/qianwentao/SARClip/SARCLIP+QwenVL")
+SARCLIP_QWEN_DIR = Path("/home/qianwentao/SARClip/SARCLIP+QwenVL0")
 SARCLIP_REPO_DIR = Path("/home/qianwentao/SARClip/SARCLIP-main")
 STAGE1_DIR       = Path(__file__).resolve().parent.parent / "stage1"
 
@@ -63,13 +65,17 @@ SARCLIP_MODEL_NAME = "ViT-B-16"
 SARCLIP_CACHE_DIR  = "/home/qianwentao/SARClip/Model/ViT-B-16"
 DEVICE             = "cuda:0"
 PRECISION          = "fp32"
-BATCH_SIZE         = 128   # 更大 batch 提升 GPU 利用率
+BATCH_SIZE         = 256   # GPU batch size
+IO_WORKERS         = 4     # 少量并发，避免网络挂载过载
+IO_TIMEOUT         = 10    # 单张图片读取超时秒数，超时跳过
 
 # 图片根目录（SARDet-100K train 解压后）
 SARDET_TRAIN_DIR = Path("/mnt/data/mm_data/SAR/SARDet_100K/data/Images/train")
 
-# pt 输出目录
-PT_CACHE_DIR = Path("/mnt/data/mm_data/SAR/SARDet_100K/data/Images/pt_cache")
+# pt 输出目录：写到 /mnt/data/zhuxiang/pt_cache（避免写 mm_data 触发脏页卡死）
+PT_CACHE_DIR     = Path("/mnt/data/zhuxiang/pt_cache")
+# 旧缓存目录（已有 52k 个文件，复用）
+PT_CACHE_DIR_OLD = Path("/mnt/data/mm_data/SAR/SARDet_100K/data/Images/pt_cache")
 
 # VQA json 根目录
 VQA_ROOT = Path("/mnt/data/mm_data/SAR/SARLANG-1M/Text/VQA")
@@ -138,22 +144,25 @@ def extract_unique_images(
     """
     返回 stem → pt_path (None 表示提取失败)。
     只处理 pt_cache 中尚未存在的 stem。
+    多线程并行读图，消除 IO 瓶颈。
     """
     PT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     preprocess = encoder.preprocess
 
-    # 分 already-done 和 need-extract
     stem_to_pt: Dict[str, Optional[Path]] = {}
     to_extract: List[str] = []
 
     for stem in unique_stems:
-        pt_path = PT_CACHE_DIR / f"{stem}.pt"
-        if pt_path.exists():
-            stem_to_pt[stem] = pt_path
+        pt_new = PT_CACHE_DIR     / f"{stem}.pt"
+        pt_old = PT_CACHE_DIR_OLD / f"{stem}.pt"
+        if pt_new.exists():
+            stem_to_pt[stem] = pt_new
+        elif pt_old.exists():
+            stem_to_pt[stem] = pt_old   # 复用旧缓存
         elif stem in img_index:
             to_extract.append(stem)
         else:
-            stem_to_pt[stem] = None   # 图片不存在
+            stem_to_pt[stem] = None
 
     n_skip    = len(stem_to_pt)
     n_total   = len(to_extract)
@@ -163,25 +172,37 @@ def extract_unique_images(
 
     print(f"  唯一图片: {len(unique_stems)}  |  已缓存={n_skip}  |  待提取={n_total}")
 
-    for batch_start in range(0, len(to_extract), BATCH_SIZE):
-        batch_stems = to_extract[batch_start : batch_start + BATCH_SIZE]
-        imgs_tensor = []
-        valid_stems = []
+    def _load_one(stem: str):
+        """单张图片读取 + preprocess，返回 (stem, tensor | None)"""
+        img_path = img_index[stem]
+        try:
+            return stem, preprocess(read_sar_as_rgb(str(img_path)))
+        except Exception as e:
+            print(f"  [WARN] {img_path.name}: {e}")
+            return stem, None
 
-        for stem in batch_stems:
-            img_path = img_index[stem]
-            try:
-                tensor = preprocess(read_sar_as_rgb(str(img_path)))
-                imgs_tensor.append(tensor)
-                valid_stems.append(stem)
-            except BadSarImageError as e:
-                print(f"  [WARN] {img_path.name}: {e}")
-                n_fail += 1
-                stem_to_pt[stem] = None
-            except Exception as e:
-                print(f"  [WARN] {img_path.name}: {e}")
-                n_fail += 1
-                stem_to_pt[stem] = None
+    for batch_start in range(0, n_total, BATCH_SIZE):
+        batch_stems = to_extract[batch_start: batch_start + BATCH_SIZE]
+
+        # 多线程并发读图，每张限时 IO_TIMEOUT 秒，超时跳过
+        with ThreadPoolExecutor(max_workers=IO_WORKERS) as ex:
+            future_to_stem = {ex.submit(_load_one, s): s for s in batch_stems}
+            results = []
+            for fut in as_completed(future_to_stem, timeout=None):
+                stem = future_to_stem[fut]
+                try:
+                    results.append(fut.result(timeout=IO_TIMEOUT))
+                except Exception as e:
+                    print(f"  [WARN] {stem}: timeout/error ({e}), skipping")
+                    results.append((stem, None))
+
+        valid_stems  = [s for s, t in results if t is not None]
+        imgs_tensor  = [t for s, t in results if t is not None]
+        failed_stems = [s for s, t in results if t is None]
+
+        for stem in failed_stems:
+            stem_to_pt[stem] = None
+            n_fail += 1
 
         if not imgs_tensor:
             continue
@@ -190,26 +211,32 @@ def extract_unique_images(
         with torch.no_grad():
             tokens = encoder.encode_image_tokens(
                 imgs_batch, normalize=False, drop_cls=True
-            ).float().cpu()   # (B, 195, 768)
+            ).float().cpu()
 
+        import os as _os
         for i, stem in enumerate(valid_stems):
             pt_path = PT_CACHE_DIR / f"{stem}.pt"
             try:
-                torch.save(tokens[i], pt_path)
+                torch.save(tokens[i].contiguous().clone(), pt_path)
+                # fsync 确保写入落盘，避免 RAID 脏页积压卡死
+                with open(pt_path, "rb") as _f:
+                    _os.fsync(_f.fileno())
                 stem_to_pt[stem] = pt_path
                 n_success += 1
             except Exception as e:
                 print(f"  [WARN] 保存失败 {stem}.pt: {e}")
-                n_fail += 1
                 stem_to_pt[stem] = None
+                n_fail += 1
 
         done    = batch_start + len(batch_stems)
         elapsed = time.time() - t0
-        speed   = n_success / max(elapsed, 1e-6)
-        eta     = (n_total - done) / max((n_success + n_fail) / max(elapsed, 1e-6), 1e-6)
+        speed   = (n_success + n_fail) / max(elapsed, 1e-6)
+        eta     = (n_total - done) / max(speed, 1e-6)
         print(f"  提取进度 {done}/{n_total}  "
               f"成功={n_success} 失败={n_fail}  "
-              f"{speed:.1f}新图/s  ETA={eta:.0f}s")
+              f"{speed:.1f}img/s  ETA={eta:.0f}s")
+        # 每批主动触发刷盘，避免脏页积压导致后续写入阻塞
+        _os.sync()
 
     elapsed_total = time.time() - t0
     print(f"  提取完成  成功={n_success} 已跳过={n_skip} 失败={n_fail}  耗时={elapsed_total:.1f}s")

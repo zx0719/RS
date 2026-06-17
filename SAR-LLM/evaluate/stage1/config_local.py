@@ -57,10 +57,9 @@ class TrainConfig:
     grad_clip_norm: float = 1.0
 
 
-    # 设备 / 精度
-    device: str = "cuda:0"
+    # 精度（设备由命令行 --device 指定，不在 config 中硬编码）
     fp16: bool  = False       # 开启 AMP 混合精度（GradScaler + autocast）
-    # fp16: bool  = False
+    bf16: bool  = True        # 评测默认优先使用 bf16；A800 原生支持，速度和显存都更合适
 
     # 数值稳定 / 调试
     debug_nan: bool = True
@@ -68,13 +67,6 @@ class TrainConfig:
     debug_param_check_after_step: bool = True
     debug_feat_absmax_threshold: float = 1e4   # 仅告警，不直接丢样本
     debug_embed_absmax_threshold: float = 1e4  # 仅告警
-
-    # 双卡 A800 配置：
-    #   projector 在 cuda:0，Qwen 整体放 cuda:1（两卡各司其职，无 pipeline 通信开销）
-    #   若 GPU 显存不足或只有单卡，将 use_multi_gpu=False 且 qwen_device_map=None
-    use_multi_gpu: bool    = True
-    qwen_device_map: str   = "cuda:1"   # 将整个 Qwen 放到 GPU1（GPU0 留给 projector/其他进程）
-    main_device: str       = "cuda:0"   # projector 所在设备
 
     # 节省激活显存（以重算时间换空间，约减少 40~60% 激活显存）
     # gradient_checkpointing: bool = True

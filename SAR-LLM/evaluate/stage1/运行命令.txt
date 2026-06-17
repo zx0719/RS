@@ -1,0 +1,25 @@
+在第二块卡上跑全量 
+  CUDA_VISIBLE_DEVICES=1 python /home/zhuxiang/RS/SAR-LLM/evaluate/stage1/test.py \
+    --projector /mnt/data/qianwentao/checkpoints_sarqwen_single/sar_projector_stage1_sarcap.pt \
+    --gen_backend hf \
+    --datasets sarlang,sartext \
+    --max_gen_samples 500 \
+    --batch_size 32 \
+    --num_workers 8 \
+    --max_new_tokens 50 \
+    --progress_every 100 \
+    --device cuda:0
+    --no_print_samples
+
+全量
+  CUDA_VISIBLE_DEVICES=1 python /home/zhuxiang/RS/SAR-LLM/evaluate/stage1/test.py \
+    --projector /mnt/data/qianwentao/checkpoints_sarqwen_single/sar_projector_stage1_sarcap.pt \
+    --gen_backend hf \
+    --datasets sarlang,sartext \
+    --max_gen_samples -1 \
+    --batch_size 32 \
+    --num_workers 8 \
+    --max_new_tokens 50 \
+    --progress_every 10 \
+    --device cuda:0 \
+    --no_print_samples

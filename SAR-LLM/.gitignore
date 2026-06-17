@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*.pyo
+
+evaluate/stage1/.codex
+evaluate/stage1/logs/
+evaluate/stage1/outputs/
+evaluate/stage1/metrics/
+evaluate/stage2/logs/

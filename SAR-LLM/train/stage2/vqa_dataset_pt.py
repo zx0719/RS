@@ -16,6 +16,7 @@ Stage2 VQA 数据集：支持单轮和多轮对话，直接加载预提取的 SA
 from __future__ import annotations
 
 import json
+import os
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -78,13 +79,27 @@ class PtVqaDataset(Dataset):
         if not isinstance(data, list):
             raise ValueError(f"JSON 顶层应为 list，当前: {type(data)}")
 
+        # 预扫描所有 pt_path 所在目录，构建 stem→path 集合，避免逐条 stat（RAID 上极慢）
+        dir_cache: Dict[str, set] = {}
+
+        def _pt_exists(pt_path: str) -> bool:
+            if not pt_path:
+                return False
+            d = os.path.dirname(pt_path)
+            if d not in dir_cache:
+                try:
+                    dir_cache[d] = {e.name for e in os.scandir(d)}
+                except OSError:
+                    dir_cache[d] = set()
+            return os.path.basename(pt_path) in dir_cache[d]
+
         n_missing_pt = 0
         for sample in data:
             if not isinstance(sample, dict):
                 continue
 
             pt_path = sample.get("pt_path", "")
-            if not pt_path or not Path(pt_path).exists():
+            if not _pt_exists(pt_path):
                 n_missing_pt += 1
                 continue
 
