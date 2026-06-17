@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
 import uuid
 from datetime import datetime, timezone
@@ -64,7 +65,14 @@ except ImportError:
 # Constants
 # ---------------------------------------------------------------------------
 
-_SCHEMA_FORMAT = "GeoTIFF"
+_SCHEMA_FORMAT = "GeoTIFF"  # default/fallback when extension is unknown
+_FORMAT_BY_EXT = {
+    ".tif": "GeoTIFF",
+    ".tiff": "GeoTIFF",
+    ".jpg": "JPEG",
+    ".jpeg": "JPEG",
+    ".png": "PNG",
+}
 _FALLBACK_SATELLITE = "UNKNOWN"
 _FALLBACK_SENSOR = "SAR"
 
@@ -77,6 +85,26 @@ class ImagePreprocessor:
     >>> ip = ImagePreprocessor()
     >>> input_block = ip.parse("file:///data/sample.tif", mission)
     """
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _detect_format(path: str) -> str:
+        """Map a file extension to the schema ``input.image.format`` value.
+
+        Falls back to ``_SCHEMA_FORMAT`` ("GeoTIFF") for unknown/missing
+        extensions to preserve backward-compatible behaviour. Recognised
+        extensions return GeoTIFF/JPEG/PNG; any other extension is upper-cased
+        (e.g. ``.bmp`` -> ``BMP``).
+        """
+        ext = Path(path).suffix.lower()
+        if not ext:
+            return _SCHEMA_FORMAT
+        if ext in _FORMAT_BY_EXT:
+            return _FORMAT_BY_EXT[ext]
+        return ext.lstrip(".").upper()
 
     # ------------------------------------------------------------------
     # Public API
@@ -129,7 +157,7 @@ class ImagePreprocessor:
             "image": {
                 "uri": image_uri,
                 "file_name": file_name,
-                "format": _SCHEMA_FORMAT,
+                "format": self._detect_format(local_path),
                 "width": image_meta.get("width"),
                 "height": image_meta.get("height"),
                 "bands": image_meta.get("bands"),
@@ -218,9 +246,14 @@ class ImagePreprocessor:
                 if transform is not None:
                     pixel_x = abs(transform.a)
                     pixel_y = abs(transform.e)
-                    # If CRS is geographic (degrees), convert to approximate metres
+                    # If CRS is geographic (degrees), convert to approximate
+                    # metres. Longitude (X) degrees shrink by cos(latitude), so
+                    # scale the X axis by cos(center_lat); latitude (Y) stays
+                    # ~111320 m/deg. transform.f is the y-origin (deg).
                     if ds.crs is not None and ds.crs.is_geographic:
-                        pixel_x_m = pixel_x * 111320
+                        center_lat = transform.f + (ds.height / 2.0) * transform.e
+                        lon_factor = max(math.cos(math.radians(center_lat)), 0.01)
+                        pixel_x_m = pixel_x * 111320 * lon_factor
                         pixel_y_m = pixel_y * 111320
                     else:
                         pixel_x_m = pixel_x
@@ -334,7 +367,12 @@ class ImagePreprocessor:
                 # Check if projection is geographic (degrees)
                 is_geo = srs.IsGeographic() if wkt else False
                 if is_geo:
-                    pixel_x_m = pixel_x * 111320
+                    # Longitude (X) degrees shrink by cos(latitude); scale the X
+                    # axis by cos(center_lat) while latitude (Y) stays ~111320
+                    # m/deg. gt[3] is the y-origin (deg), gt[5] the row scale.
+                    center_lat = gt[3] + (ds.RasterYSize / 2.0) * gt[5]
+                    lon_factor = max(math.cos(math.radians(center_lat)), 0.01)
+                    pixel_x_m = pixel_x * 111320 * lon_factor
                     pixel_y_m = pixel_y * 111320
                 else:
                     pixel_x_m = pixel_x

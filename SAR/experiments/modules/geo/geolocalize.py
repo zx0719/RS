@@ -278,9 +278,15 @@ class GeoLocalizer:
                 #          d=row_shear, e=row_scale, f=y_origin)
                 self._gt = (t.c, t.a, t.b, t.f, t.d, t.e)
 
-                # GSD in metres: if CRS is geographic (degrees), convert
+                # GSD in metres: if CRS is geographic (degrees), convert.
+                # Latitude (Y/row) degrees stay ~constant at 111320 m/deg, but
+                # longitude (X/col) degrees shrink by cos(latitude); without the
+                # cos factor the X GSD is systematically overestimated at higher
+                # latitudes. t.f is the y-origin (deg), t.e the row scale.
                 if ds.crs.is_geographic:
-                    self.gsd_x_m = abs(t.a) * 111320
+                    center_lat = t.f + (ds.height / 2.0) * t.e
+                    lon_factor = max(math.cos(math.radians(center_lat)), 0.01)
+                    self.gsd_x_m = abs(t.a) * 111320 * lon_factor
                     self.gsd_y_m = abs(t.e) * 111320
                 else:
                     self.gsd_x_m = abs(t.a)
@@ -334,9 +340,14 @@ class GeoLocalizer:
             epsg = srs.GetAttrValue("AUTHORITY", 1)
             self.crs = f"EPSG:{epsg}" if epsg else wkt
 
-            # GSD in metres: convert if geographic CRS (degrees)
+            # GSD in metres: convert if geographic CRS (degrees). Longitude
+            # (X/col) degrees shrink by cos(latitude), so scale the X axis by
+            # cos(center_lat); latitude (Y/row) stays ~111320 m/deg. gt[3] is
+            # the y-origin (deg), gt[5] the row scale.
             if srs.IsGeographic():
-                self.gsd_x_m = abs(gt[1]) * 111320
+                center_lat = gt[3] + (ds.RasterYSize / 2.0) * gt[5]
+                lon_factor = max(math.cos(math.radians(center_lat)), 0.01)
+                self.gsd_x_m = abs(gt[1]) * 111320 * lon_factor
                 self.gsd_y_m = abs(gt[5]) * 111320
             else:
                 self.gsd_x_m = abs(gt[1])
