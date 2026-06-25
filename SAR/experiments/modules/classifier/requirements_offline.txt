@@ -1,0 +1,16 @@
+# Offline training dependencies for the SAR classifier/segmentation pack.
+#
+# Target platform:
+#   - Linux x86_64
+#   - Python 3.11
+#   - NVIDIA driver compatible with CUDA 13.0
+#
+# Install on the air-gapped machine with:
+#   python3 -m pip install --no-index --find-links ./wheels/ -r code/requirements_offline.txt
+
+torch==2.11.0+cu130
+torchvision==0.26.0+cu130
+numpy==2.4.4
+opencv-python==4.13.0.92
+pillow==11.3.0
+ultralytics==8.4.37
