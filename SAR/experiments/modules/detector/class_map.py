@@ -1,27 +1,23 @@
 """
 class_map.py — YOLO class index → Evidence Package class descriptor
 
-v4 多类固定ID方案（ID不可更改，扩展只能追加）：
+v5 2 类方案（M1 粗检测，当前主线）：
+  ID  类别          数据来源                  状态
+  ──────────────────────────────────────────────────────
+  0   ship          SARDet_100K + SSDD + ...   ACTIVE
+  1   aircraft      SARDet_100K + SAR-air     ACTIVE
 
+v4 5 类方案（历史，保留兼容）：
   ID  类别          数据来源                  状态
   ──────────────────────────────────────────────────────
   0   ship          SSDD + SAR-Ship-Dataset   ACTIVE
   1   aircraft      SARDet_100K + SAR-air     ACTIVE
-  2   tank          SARDet_100K               ACTIVE
-  3   bridge        SARDet_100K + MSAR        ACTIVE
-  4   harbor        SARDet_100K               ACTIVE
-  5   runway        待标注                     RESERVED
-  6   taxiway       待标注                     RESERVED
-  7   apron         待标注                     RESERVED
-  8   hangar        待标注                     RESERVED
-  9   shelter       待标注                     RESERVED
-  10  tower         待标注                     RESERVED
-  11  ammo_depot    待标注                     RESERVED
-  12  stopway       待标注                     RESERVED
-  13  liaison       待标注                     RESERVED
+  2   tank          SARDet_100K               DEPRECATED
+  3   bridge        SARDet_100K + MSAR        DEPRECATED
+  4   harbor        SARDet_100K               DEPRECATED
+  5-13 (RESERVED)
 
-RESERVED 类别：训练数据中暂不包含，推理时若检测到输出"预留-XX"，
-不会与已知类别混淆。标注数据就绪后直接加入训练集即可，无需修改ID。
+harbor/airport 不再由 YOLO 检测，由分支 B 的 Gate + FastSAM 独立处理。
 """
 
 from typing import TypedDict
@@ -172,6 +168,27 @@ def get_active_classes() -> dict[int, ClassDescriptor]:
     """返回所有 ACTIVE 状态的类别（已有训练数据）。"""
     return {k: v for k, v in CLASS_MAP.items() if v["status"] == "ACTIVE"}
 
+
+# ---------------------------------------------------------------------------
+# v5 2 类方案 — M1 粗检测 (当前主线)
+# ---------------------------------------------------------------------------
+
+V5_2CLASS_MAP: dict[int, ClassDescriptor] = {
+    0: {
+        "code": "ship",
+        "name_cn": "舰船",
+        "super_class": "ship",
+        "priority": "HIGH",
+        "status": "ACTIVE",
+    },
+    1: {
+        "code": "aircraft",
+        "name_cn": "飞机",
+        "super_class": "aircraft",
+        "priority": "HIGH",
+        "status": "ACTIVE",
+    },
+}
 
 # ---------------------------------------------------------------------------
 # 历史兼容：v1/v2 单类模型的映射（推理时传入 class_map 参数使用）

@@ -30,13 +30,22 @@ logger = logging.getLogger(__name__)
 _SCHEMA_VERSION = "1.0.0"
 _TASK_TYPE = "intel_brief"
 
-# Class codes that belong to super-class "ship" / "aircraft"
+# Class codes that belong to super-class "ship" / "aircraft" (v3 23-class system)
 _SHIP_CODES = frozenset({
+    "military_auxiliary", "combat_ship", "liquid_cargo", "harbor_service",
+    "bulk_carrier", "other_vessel", "survey_vessel", "amphibious",
+    "container_ship", "engineering_vessel", "fishing_vessel", "tug_boat",
+    "passenger_ship", "ro_ro_ship", "sailing_vessel", "research_vessel",
+    "ship",
+    # Legacy
     "carrier", "destroyer", "frigate", "replenishment",
-    "amphibious", "other_vessel",
 })
 _AIRCRAFT_CODES = frozenset({
-    "fighter", "bomber", "transport", "aew", "helicopter", "other_aircraft",
+    "combat_aircraft", "transport_aircraft", "combat_support_aircraft",
+    "helicopter", "other_aircraft",
+    "aircraft",
+    # Legacy
+    "fighter", "bomber", "transport", "aew",
 })
 
 _LOW_CONFIDENCE_THRESHOLD = 0.5
@@ -58,6 +67,8 @@ class EvidenceBuilder:
         mission: dict[str, Any],
         objects: list[dict[str, Any]],
         scene: Optional[dict[str, Any]] = None,
+        segmentation: Optional[dict[str, Any]] = None,
+        gate_result: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Assemble a complete Evidence Package.
 
@@ -74,6 +85,12 @@ class EvidenceBuilder:
         scene:
             Optional pre-populated scene block.  When None a minimal scene
             block is derived from the GeoLocalizer transform.
+        segmentation:
+            Optional M3 FastSAM output dict with keys:
+            ``mask_polygon``, ``mask_area_km2``, ``scene_type``, ``success``.
+        gate_result:
+            Optional Gate classifier output dict with keys:
+            ``scene_class``, ``confidence``, ``gate_decision``.
 
         Returns
         -------
@@ -98,8 +115,28 @@ class EvidenceBuilder:
         if scene is None:
             scene = _build_minimal_scene(localizer, mission)
 
+        # ── Merge gate result into scene ────────────────────────────────────
+        if gate_result is not None:
+            scene["scene_type"] = gate_result.get("scene_class", "unknown")
+            scene["scene_confidence"] = gate_result.get("confidence")
+            scene["scene_source"] = gate_result.get("model_version", "unknown")
+
+        # ── Spatial containment (ship in harbor? aircraft in airport?) ───────
+        if segmentation is not None and segmentation.get("success"):
+            geo_objects = _apply_spatial_containment(geo_objects, segmentation)
+            # Attach segmentation info to scene
+            scene.setdefault("segmentation", {})
+            scene["segmentation"]["mask_area_km2"] = segmentation.get("mask_area_km2")
+            scene["segmentation"]["segmentation_uri"] = segmentation.get("segmentation_uri")
+            scene["segmentation"]["segmentation_version"] = segmentation.get("model_version")
+            # Set environment flags
+            scene.setdefault("environment", {})
+            stype = segmentation.get("scene_type", "")
+            scene["environment"]["is_harbor"] = (stype == "harbor")
+            scene["environment"]["is_airport"] = (stype == "airport")
+
         # ── Statistics ──────────────────────────────────────────────────────
-        statistics = _compute_statistics(geo_objects, localizer)
+        statistics = _compute_statistics(geo_objects, localizer, segmentation)
 
         # ── Validate totals ─────────────────────────────────────────────────
         total_in_stats = statistics["totals"]["all_objects"]
@@ -153,6 +190,7 @@ class EvidenceBuilder:
 def _compute_statistics(
     objects: list[dict[str, Any]],
     localizer: Optional[GeoLocalizer] = None,
+    segmentation: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Compute the full statistics block from *objects* programmatically."""
     n = len(objects)
@@ -169,11 +207,19 @@ def _compute_statistics(
         or o.get("class", {}).get("code") in _AIRCRAFT_CODES
     )
 
-    totals = {
+    totals: dict[str, Any] = {
         "all_objects": n,
         "ships": ship_count,
         "aircraft": aircraft_count,
     }
+
+    # ── Containment counts ───────────────────────────────────────────────────
+    in_harbor = sum(1 for o in objects if o.get("attributes", {}).get("in_harbor"))
+    in_airport = sum(1 for o in objects if o.get("attributes", {}).get("in_airport"))
+    if in_harbor > 0:
+        totals["in_harbor"] = in_harbor
+    if in_airport > 0:
+        totals["in_airport"] = in_airport
 
     # ── by_class ─────────────────────────────────────────────────────────────
     class_counter: Counter[str] = Counter()
@@ -192,10 +238,16 @@ def _compute_statistics(
     ]
 
     # ── by_super_class ───────────────────────────────────────────────────────
-    by_super_class = [
+    by_super_class: list[dict[str, Any]] = [
         {"code": "ship", "count": ship_count},
         {"code": "aircraft", "count": aircraft_count},
     ]
+    # Add area class when segmentation is available
+    if segmentation is not None and segmentation.get("success"):
+        area_type = segmentation.get("scene_type", "")
+        if area_type:
+            by_super_class.append({"code": area_type, "count": 1,
+                                   "area_km2": segmentation.get("mask_area_km2")})
 
     # ── Confidence summary ───────────────────────────────────────────────────
     confidences = [
@@ -221,13 +273,27 @@ def _compute_statistics(
     # ── Spatial summary ──────────────────────────────────────────────────────
     spatial_summary = _compute_spatial_summary(objects, localizer)
 
-    return {
+    # ── Area (from segmentation) ─────────────────────────────────────────────
+    result: dict[str, Any] = {
         "totals": totals,
         "by_class": by_class,
         "by_super_class": by_super_class,
         "spatial_summary": spatial_summary,
         "confidence_summary": confidence_summary,
     }
+    if segmentation is not None and segmentation.get("success"):
+        result["area"] = {
+            "harbor_area_km2": (
+                segmentation["mask_area_km2"]
+                if segmentation.get("scene_type") == "harbor" else None
+            ),
+            "airport_area_km2": (
+                segmentation["mask_area_km2"]
+                if segmentation.get("scene_type") == "airport" else None
+            ),
+        }
+
+    return result
 
 
 def _compute_spatial_summary(
@@ -322,6 +388,48 @@ def _simple_cluster_count(
                 union(i, j)
 
     return len({find(i) for i in range(n)})
+
+
+# ---------------------------------------------------------------------------
+# Spatial containment
+# ---------------------------------------------------------------------------
+
+def _apply_spatial_containment(
+    objects: list[dict[str, Any]],
+    segmentation: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Tag objects whose centre falls inside the harbor/airport mask.
+
+    Uses OpenCV pointPolygonTest for efficient point-in-polygon testing.
+    """
+    polygon = segmentation.get("mask_polygon", [])
+    scene_type = segmentation.get("scene_type", "")
+    if not polygon or len(polygon) < 3:
+        return objects
+
+    try:
+        import cv2
+        import numpy as np
+        contour = np.array(polygon, dtype=np.float32).reshape(-1, 1, 2)
+    except ImportError:
+        return objects
+
+    for obj in objects:
+        pixel = obj.get("geometry", {}).get("pixel", {})
+        cx = pixel.get("center_x")
+        cy = pixel.get("center_y")
+        if cx is None or cy is None:
+            continue
+
+        result = cv2.pointPolygonTest(contour, (float(cx), float(cy)), False)
+        if result >= 0:  # inside or on edge
+            attrs = obj.setdefault("attributes", {})
+            if scene_type == "harbor":
+                attrs["in_harbor"] = True
+            elif scene_type == "airport":
+                attrs["in_airport"] = True
+
+    return objects
 
 
 # ---------------------------------------------------------------------------

@@ -82,12 +82,32 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Scene type: harbor|airport|anchorage|airbase|unknown (default: harbor)",
     )
 
-    # Optional — detector
+    # Optional — detector (M1)
     parser.add_argument(
         "--model",
         default=None,
         metavar="PATH",
         help="Path to YOLOv8 .pt weights (if omitted, uses MockDetector)",
+    )
+
+    # Optional — Branch B: Gate + M2 classifiers + M3 segmentation
+    parser.add_argument(
+        "--gate-model",
+        default=None,
+        metavar="PATH",
+        help="Path to Gate ResNet-18 scene classifier weights (.pt)",
+    )
+    parser.add_argument(
+        "--ship-cls-model",
+        default=None,
+        metavar="PATH",
+        help="Path to M2a ship fine-grained classifier weights (.pt)",
+    )
+    parser.add_argument(
+        "--aircraft-cls-model",
+        default=None,
+        metavar="PATH",
+        help="Path to M2b aircraft fine-grained classifier weights (.pt)",
     )
 
     # Optional — LLM
@@ -404,6 +424,82 @@ def main(argv: list[str] | None = None) -> int:
         logger.warning("Continuing with empty objects list")
         objects = []
 
+    # ── Step 1.5a: Gate scene classification (Branch B) ──────────────────────
+    gate_result: dict[str, Any] | None = None
+    if args.gate_model and Path(args.gate_model).exists():
+        logger.info("Step 1.5a: Running Gate scene classifier")
+        try:
+            from modules.classifier import SceneGate  # type: ignore[import]
+            gate = SceneGate(args.gate_model)
+            gate_result = gate.predict(args.image)
+            logger.info(
+                "Gate result: %s (conf=%.3f, trigger=%s)",
+                gate_result["scene_class"],
+                gate_result["confidence"],
+                gate_result["gate_decision"],
+            )
+            # Override region_type with gate result
+            if gate_result["gate_decision"]:
+                args.region_type = gate_result["scene_class"]
+        except Exception as exc:
+            logger.warning("Gate classification failed: %s — continuing without gate", exc)
+            gate_result = None
+    elif args.gate_model:
+        logger.warning("Gate model not found at %s — skipping", args.gate_model)
+
+    # ── Step 1.5b: Fine-grained classification (M2a/M2b) ─────────────────────
+    if objects:
+        # Ship fine-grained classification
+        ship_objs = [o for o in objects if o.get("class", {}).get("super_class") == "ship"]
+        if ship_objs and args.ship_cls_model and Path(args.ship_cls_model).exists():
+            logger.info("Step 1.5b: M2a ship fine-grained classification (%d ships)", len(ship_objs))
+            try:
+                from modules.classifier import ShipClassifier  # type: ignore[import]
+                ship_clf = ShipClassifier(args.ship_cls_model)
+                ship_clf.classify_batch(args.image, objects)
+            except Exception as exc:
+                logger.warning("Ship classification failed: %s", exc)
+
+        # Aircraft fine-grained classification
+        aircraft_objs = [o for o in objects if o.get("class", {}).get("super_class") == "aircraft"]
+        if aircraft_objs and args.aircraft_cls_model and Path(args.aircraft_cls_model).exists():
+            logger.info(
+                "Step 1.5b: M2b aircraft fine-grained classification (%d aircraft)",
+                len(aircraft_objs),
+            )
+            try:
+                from modules.classifier import AircraftClassifier  # type: ignore[import]
+                aircraft_clf = AircraftClassifier(args.aircraft_cls_model)
+                aircraft_clf.classify_batch(args.image, objects)
+            except Exception as exc:
+                logger.warning("Aircraft classification failed: %s", exc)
+
+    # ── Step 1.5c: M3 FastSAM segmentation (conditional on Gate) ────────────
+    segmentation: dict[str, Any] | None = None
+    if gate_result and gate_result.get("gate_decision"):
+        logger.info(
+            "Step 1.5c: M3 FastSAM segmentation (prompt=%s)",
+            gate_result["scene_class"],
+        )
+        try:
+            from modules.segmentation import FastSAMSegmenter  # type: ignore[import]
+            fastsam = FastSAMSegmenter()
+            segmentation = fastsam.segment(
+                args.image,
+                prompt=gate_result["scene_class"],
+            )
+            if segmentation.get("success"):
+                logger.info(
+                    "FastSAM: area=%.4f km² (mask_px=%d)",
+                    segmentation.get("mask_area_km2", 0),
+                    segmentation.get("mask_area_px", 0),
+                )
+            else:
+                logger.info("FastSAM: no valid segmentation found")
+        except Exception as exc:
+            logger.warning("FastSAM segmentation failed: %s", exc)
+            segmentation = None
+
     # ── Step 2: Build Evidence Package ────────────────────────────────────────
     logger.info("Step 2: Building Evidence Package")
     package: dict[str, Any] = {}
@@ -416,7 +512,11 @@ def main(argv: list[str] | None = None) -> int:
             "user_prompt": None,
         }
         builder = EvidenceBuilder()
-        package = builder.build(args.image, mission, objects)
+        package = builder.build(
+            args.image, mission, objects,
+            segmentation=segmentation,
+            gate_result=gate_result,
+        )
         logger.info(
             "Evidence Package built: %s | status=%s",
             package.get("package_id"), package.get("status"),
