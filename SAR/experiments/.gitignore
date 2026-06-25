@@ -36,6 +36,21 @@ output/
 # Claude local config
 .claude/
 
+# Deployment bundles (large archives)
+*.tar.gz
+*bundle_*/
+upload_bundle_*/
+full_bundle_*/
+offline_training_pack/
+offline_training_pack*/
+
+# Temporary / scratch directories
+temp_*/
+tmp_/
+
+# Editor / IDE
+.codex/
+
 # Misc
 .DS_Store
 *.log
